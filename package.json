@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Desktop shell for Hermes Agent using Electron, React, and Vite.",
+  "description": "基于 Electron、React 与 Vite 的 Hermes 桌面助手外壳。",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",

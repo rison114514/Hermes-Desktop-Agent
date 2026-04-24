@@ -18,6 +18,12 @@ declare global {
       getWorkspaceSnapshot: () => Promise<{
         cwd: string
         session: string
+        files: Array<{
+          name: string
+          path: string
+          type: 'file' | 'directory'
+          children?: Array<unknown>
+        }>
         tasks: Array<{ id: string; title: string; done: boolean }>
         windows: {
           available: boolean

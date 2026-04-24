@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage } from 'electron'
 import { readdir, readFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent } from './hermes-bridge.js'
@@ -33,6 +34,13 @@ type HermesSkillSnapshot = {
   category: string
   description: string
   enabled: boolean
+}
+
+type WorkspaceFileNode = {
+  name: string
+  path: string
+  type: 'file' | 'directory'
+  children?: WorkspaceFileNode[]
 }
 
 function createTray() {
@@ -214,10 +222,11 @@ ipcMain.handle('workspace:get-snapshot', async () => {
   return {
     cwd,
     session: '本地桌面会话',
+    files: await readWorkspaceTree(cwd),
     tasks: [
       { id: 'task-layout', title: '完成三栏布局骨架', done: true },
       { id: 'task-bridge', title: '接通 Hermes stdio 桥接', done: true },
-      { id: 'task-workspace', title: '接入真实工作区文件树', done: false },
+      { id: 'task-workspace', title: '接入真实工作区文件树', done: true },
       { id: 'task-windows', title: '启用 WSL 到 Windows 互操作', done: windows.available },
       { id: 'task-clipboard', title: '打通 Windows 剪贴板能力', done: windows.available },
     ],
@@ -383,6 +392,74 @@ function updateTrayMenu() {
 
 function getTrayIconDataUrl() {
   return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAwUlEQVR4AWOgH2DgPxQMDP9nYGBg+A8E8R8GhoZ/GP5jYGA4gKkGJYbi/6OhoWE4gWQxMDBg+I8RkYHhP0YGBsY/gKQDmRgeIPmPkcHhP8bAwPAfSAbCwPD/MPzHwMDA8B8jAwPDfwyMDAwM/0EwmIGBkf8wMDAw/AdkYGj4j5GBgWE4w2mB4T9GRgaG/xgYGBj+AzIYGBj+Y2BgYPgPZGB4g+Q/RkYGhv8YGhgY/gMyMDB8x8DAwPAfIwMDw38MDAwMDP8B0m0gGQbqYVMAAAAASUVORK5CYII='
+}
+
+
+const WORKSPACE_TREE_MAX_DEPTH = 3
+const WORKSPACE_TREE_MAX_ENTRIES = 80
+const IGNORED_WORKSPACE_NAMES = new Set(['.git', 'node_modules', 'dist', 'dist-electron'])
+
+async function readWorkspaceTree(rootDir: string): Promise<WorkspaceFileNode[]> {
+  const counter = { value: 0 }
+  return readWorkspaceDirectory(rootDir, '', 0, counter)
+}
+
+async function readWorkspaceDirectory(
+  absoluteDir: string,
+  relativeDir: string,
+  depth: number,
+  counter: { value: number },
+): Promise<WorkspaceFileNode[]> {
+  if (depth > WORKSPACE_TREE_MAX_DEPTH || counter.value >= WORKSPACE_TREE_MAX_ENTRIES) {
+    return []
+  }
+
+  let entries: Dirent[] = []
+  try {
+    entries = await readdir(absoluteDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const visibleEntries = entries
+    .filter((entry) => !entry.name.startsWith('.') || entry.name === '.env.example')
+    .filter((entry) => !IGNORED_WORKSPACE_NAMES.has(entry.name))
+    .sort((left, right) => {
+      if (left.isDirectory() !== right.isDirectory()) {
+        return left.isDirectory() ? -1 : 1
+      }
+      return left.name.localeCompare(right.name)
+    })
+
+  const nodes: WorkspaceFileNode[] = []
+
+  for (const entry of visibleEntries) {
+    if (counter.value >= WORKSPACE_TREE_MAX_ENTRIES) {
+      break
+    }
+
+    const relativePath = relativeDir ? path.posix.join(relativeDir, entry.name) : entry.name
+    const absolutePath = path.join(absoluteDir, entry.name)
+    counter.value += 1
+
+    if (entry.isDirectory()) {
+      nodes.push({
+        name: entry.name,
+        path: relativePath,
+        type: 'directory',
+        children: await readWorkspaceDirectory(absolutePath, relativePath, depth + 1, counter),
+      })
+      continue
+    }
+
+    nodes.push({
+      name: entry.name,
+      path: relativePath,
+      type: 'file',
+    })
+  }
+
+  return nodes
 }
 
 async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
