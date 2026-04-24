@@ -1,20 +1,42 @@
 import { ChevronRight, FileCode2, FolderTree } from 'lucide-react'
 import type { WorkspaceFileNode } from '@/store/workspace'
 import { useWorkspaceStore } from '@/store/workspace'
+import { cn } from '@/lib/utils'
 
 function TreeNode({ node, depth = 0 }: { node: WorkspaceFileNode; depth?: number }) {
+  const expandedPaths = useWorkspaceStore((state) => state.expandedPaths)
+  const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
+  const toggleExpandedPath = useWorkspaceStore((state) => state.toggleExpandedPath)
+  const setSelectedFilePath = useWorkspaceStore((state) => state.setSelectedFilePath)
   const isDirectory = node.type === 'directory'
+  const isExpanded = expandedPaths.includes(node.path)
+
+  const handleClick = () => {
+    if (isDirectory) {
+      toggleExpandedPath(node.path)
+      return
+    }
+
+    setSelectedFilePath(node.path)
+  }
 
   return (
     <div>
-      <div
-        className="flex items-center gap-2 rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
+      <button
+        type="button"
+        onClick={handleClick}
+        className={cn(
+          'flex w-full items-center gap-2 rounded-2xl border px-3 py-2 text-left text-sm transition',
+          selectedFilePath === node.path
+            ? 'border-cyan-300/30 bg-cyan-400/12 text-cyan-50'
+            : 'border-white/6 bg-slate-950/50 text-slate-200 hover:border-white/12 hover:bg-slate-900/80',
+        )}
         style={{ paddingLeft: `${12 + depth * 14}px` }}
         title={node.path}
       >
         {isDirectory ? (
           <>
-            <ChevronRight className="h-3.5 w-3.5 text-slate-500" />
+            <ChevronRight className={cn('h-3.5 w-3.5 text-slate-500 transition', isExpanded && 'rotate-90')} />
             <FolderTree className="h-4 w-4 text-cyan-200" />
           </>
         ) : (
@@ -24,8 +46,8 @@ function TreeNode({ node, depth = 0 }: { node: WorkspaceFileNode; depth?: number
           </>
         )}
         <span className="truncate">{node.name}</span>
-      </div>
-      {isDirectory && node.children?.length ? (
+      </button>
+      {isDirectory && isExpanded && node.children?.length ? (
         <div className="mt-2 space-y-2">
           {node.children.map((child) => (
             <TreeNode key={child.path} node={child} depth={depth + 1} />

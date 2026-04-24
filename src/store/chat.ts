@@ -1,5 +1,13 @@
 import { create } from 'zustand'
 
+export interface ToolCallState {
+  toolName: string
+  callId?: string
+  args?: string
+  result?: string
+  status: 'running' | 'completed'
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -7,6 +15,8 @@ export interface Message {
   streaming?: boolean
   tone?: 'default' | 'muted' | 'error'
   label?: string
+  kind?: 'text' | 'tool'
+  tool?: ToolCallState
 }
 
 interface ChatStore {
@@ -16,12 +26,21 @@ interface ChatStore {
   connectionLabel: string
   setDraft: (draft: string) => void
   addMessage: (message: Message) => void
+  upsertToolMessage: (toolMessage: ToolCallState) => void
   setActiveAssistant: (id: string | null) => void
   touchAssistantMessage: (id?: string | null) => string | null
   appendChunk: (id: string, chunk: string) => void
   replaceMessage: (id: string, content: string) => void
   finalizeMessage: (id: string) => void
   setConnectionLabel: (label: string) => void
+}
+
+function createToolSummary(tool: ToolCallState) {
+  if (tool.status === 'completed') {
+    return `工具 ${tool.toolName} 已完成。`
+  }
+
+  return `工具 ${tool.toolName} 调用中...`
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -31,13 +50,48 @@ export const useChatStore = create<ChatStore>((set) => ({
       role: 'assistant',
       content: 'Hermes 桌面助手已就绪。你可以直接描述代码任务、仓库问题，或让它分析当前工作区。',
       label: '已就绪',
+      kind: 'text',
     },
   ],
   draft: '',
   activeAssistantId: null,
   connectionLabel: '空闲',
   setDraft: (draft) => set({ draft }),
-  addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
+  addMessage: (message) => set((state) => ({ messages: [...state.messages, { kind: 'text', ...message }] })),
+  upsertToolMessage: (toolMessage) =>
+    set((state) => {
+      const messageId = `tool-${toolMessage.callId ?? toolMessage.toolName}`
+      const existing = state.messages.find((message) => message.id === messageId)
+      const nextMessage: Message = {
+        id: messageId,
+        role: 'system',
+        content: createToolSummary(toolMessage),
+        tone: 'muted',
+        label: toolMessage.status === 'completed' ? '工具结果' : '工具调用',
+        kind: 'tool',
+        tool: toolMessage,
+      }
+
+      if (!existing) {
+        return { messages: [...state.messages, nextMessage] }
+      }
+
+      return {
+        messages: state.messages.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                ...nextMessage,
+                tool: {
+                  ...message.tool,
+                  ...toolMessage,
+                },
+                content: createToolSummary({ ...(message.tool ?? {}), ...toolMessage, toolName: toolMessage.toolName, status: toolMessage.status } as ToolCallState),
+              }
+            : message,
+        ),
+      }
+    }),
   setActiveAssistant: (id) => set({ activeAssistantId: id }),
   touchAssistantMessage: (id) => {
     let resolvedId: string | null = null
@@ -72,6 +126,7 @@ export const useChatStore = create<ChatStore>((set) => ({
             streaming: true,
             tone: 'default',
             label: '进行中',
+            kind: 'text',
           },
         ],
         activeAssistantId: fallbackId,

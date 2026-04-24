@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Bot, Info, TriangleAlert, User2 } from 'lucide-react'
+import { Bot, Info, TriangleAlert, User2, Wrench, CheckCircle2 } from 'lucide-react'
 import type { Message } from '@/store/chat'
 import { cn } from '@/lib/utils'
 
@@ -247,14 +247,7 @@ function renderMarkdown(content: string) {
 
     switch (block.type) {
       case 'heading': {
-        const sizes = {
-          1: 'text-2xl',
-          2: 'text-xl',
-          3: 'text-lg',
-          4: 'text-base',
-          5: 'text-sm',
-          6: 'text-sm',
-        } as const
+        const sizes = { 1: 'text-2xl', 2: 'text-xl', 3: 'text-lg', 4: 'text-base', 5: 'text-sm', 6: 'text-sm' } as const
 
         return (
           <p key={key} className={cn('font-semibold text-white', sizes[block.depth as keyof typeof sizes])}>
@@ -307,6 +300,41 @@ function renderMarkdown(content: string) {
   })
 }
 
+function ToolCard({ message }: { message: Message }) {
+  const tool = message.tool
+  if (!tool) {
+    return null
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3">
+        <div className="flex items-center gap-2">
+          <Wrench className="h-4 w-4 text-cyan-200" />
+          <div>
+            <p className="text-sm font-semibold text-white">{tool.toolName}</p>
+            <p className="text-xs text-slate-400">{tool.callId ?? '未提供调用 ID'}</p>
+          </div>
+        </div>
+        <div className={cn('rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.22em]', tool.status === 'completed' ? 'bg-emerald-300/15 text-emerald-100' : 'bg-amber-300/15 text-amber-100')}>
+          {tool.status === 'completed' ? (
+            <span className="inline-flex items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5" />已完成</span>
+          ) : (
+            '执行中'
+          )}
+        </div>
+      </div>
+      {tool.args ? renderCodeBlock(tool.args, 'json') : null}
+      {tool.result ? (
+        <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200">
+          <p className="mb-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">工具输出</p>
+          <div className="space-y-3">{renderMarkdown(tool.result)}</div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function MessageBubble({ message }: { message: Message }) {
   const isAssistant = message.role === 'assistant'
   const isSystem = message.role === 'system'
@@ -337,7 +365,7 @@ export function MessageBubble({ message }: { message: Message }) {
 
       <div
         className={cn(
-          'max-w-[75%] rounded-[24px] border px-4 py-3 text-sm leading-6 shadow-[0_18px_45px_rgba(0,0,0,0.18)]',
+          'max-w-[78%] rounded-[24px] border px-4 py-3 text-sm leading-6 shadow-[0_18px_45px_rgba(0,0,0,0.18)]',
           isSystem
             ? message.tone === 'error'
               ? 'border-rose-300/20 bg-rose-400/10 text-rose-50'
@@ -351,7 +379,7 @@ export function MessageBubble({ message }: { message: Message }) {
           {badge}
           {message.streaming ? <span className="text-cyan-200">输出中</span> : null}
         </div>
-        <div className="space-y-3">{renderMarkdown(message.content)}</div>
+        {message.kind === 'tool' ? <ToolCard message={message} /> : <div className="space-y-3">{renderMarkdown(message.content)}</div>}
       </div>
 
       {!isAssistant && !isSystem && (

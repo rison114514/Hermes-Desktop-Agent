@@ -6,9 +6,18 @@ export type HermesBridgeEvent =
   | { type: 'assistant:start'; payload: { id?: string; model?: string } }
   | { type: 'assistant:delta'; payload: { id?: string; delta: string } }
   | { type: 'assistant:done'; payload: { id?: string; reason?: string; text?: string } }
+  | { type: 'tool'; payload: { id?: string; name: string; args?: string; result?: string; status: 'running' | 'completed' } }
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
   | { type: 'exit'; payload: { code: number | null } }
+
+type ToolExtraction = {
+  id?: string
+  name: string
+  args?: string
+  result?: string
+  status: 'running' | 'completed'
+}
 
 export class HermesBridge extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | null = null
@@ -170,6 +179,15 @@ export class HermesBridge extends EventEmitter {
     }
 
     const record = payload as Record<string, unknown>
+    const method = typeof record.method === 'string' ? record.method : ''
+    const params = this.unwrapJsonRpcPayload(record)
+    const role = this.extractRole(params)
+    const explicitText = this.extractTextCandidate(params)
+    const toolEvent = this.extractToolEvent(method, params) ?? this.extractToolEvent(method, record)
+
+    if (toolEvent) {
+      return [{ type: 'tool', payload: toolEvent }]
+    }
 
     if (Array.isArray(record.content)) {
       const text = this.extractTextCandidate(record.content)
@@ -177,11 +195,6 @@ export class HermesBridge extends EventEmitter {
         return this.normalizeAssistantTextPayload(record, text)
       }
     }
-
-    const method = typeof record.method === 'string' ? record.method : ''
-    const params = this.unwrapJsonRpcPayload(record)
-    const role = this.extractRole(params)
-    const explicitText = this.extractTextCandidate(params)
 
     if (method) {
       return this.normalizeRpcEvent(method, params, role, explicitText)
@@ -280,10 +293,7 @@ export class HermesBridge extends EventEmitter {
     return events
   }
 
-  private normalizeAssistantTextPayload(
-    payload: unknown,
-    text: string,
-  ): HermesBridgeEvent[] {
+  private normalizeAssistantTextPayload(payload: unknown, text: string): HermesBridgeEvent[] {
     const id = this.extractMessageId(payload)
     const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
     const isDone = record ? this.isDonePayload(record) : false
@@ -393,6 +403,92 @@ export class HermesBridge extends EventEmitter {
     }
 
     return null
+  }
+
+  private extractToolEvent(method: string, payload: unknown): ToolExtraction | null {
+    if (!payload || typeof payload !== 'object') {
+      return null
+    }
+
+    const record = payload as Record<string, unknown>
+    const marker = [method, this.readString(record, 'type'), this.readString(record, 'event'), this.readString(record, 'role')]
+      .filter((value): value is string => Boolean(value))
+      .join(' ')
+      .toLowerCase()
+
+    const nestedFunction = record.function && typeof record.function === 'object' ? (record.function as Record<string, unknown>) : null
+    const nestedTool = record.tool && typeof record.tool === 'object' ? (record.tool as Record<string, unknown>) : null
+    const name =
+      this.readString(record, 'tool_name') ??
+      this.readString(record, 'toolName') ??
+      this.readString(record, 'name') ??
+      this.readString(nestedFunction, 'name') ??
+      this.readString(nestedTool, 'name')
+
+    const args =
+      this.stringifyStructured(record.arguments) ??
+      this.stringifyStructured(record.args) ??
+      this.stringifyStructured(record.input) ??
+      this.stringifyStructured(record.parameters) ??
+      this.stringifyStructured(nestedFunction?.arguments)
+
+    const result =
+      this.stringifyStructured(record.output) ??
+      this.stringifyStructured(record.result) ??
+      this.stringifyStructured(record.response)
+
+    const callId =
+      this.readString(record, 'call_id') ??
+      this.readString(record, 'tool_call_id') ??
+      this.readString(record, 'id')
+
+    const looksToolish =
+      marker.includes('tool') ||
+      marker.includes('function_call') ||
+      marker.includes('function call') ||
+      (Boolean(name) && (args !== null || result !== null))
+
+    if (!looksToolish || !name) {
+      return null
+    }
+
+    const status: 'running' | 'completed' =
+      marker.includes('output') || marker.includes('result') || marker.includes('complete') || marker.includes('done') || result
+        ? 'completed'
+        : 'running'
+
+    return {
+      id: callId ?? undefined,
+      name,
+      args: args ?? undefined,
+      result: result ?? undefined,
+      status,
+    }
+  }
+
+  private readString(record: Record<string, unknown> | null, key: string) {
+    if (!record) {
+      return null
+    }
+
+    const value = record[key]
+    return typeof value === 'string' && value.trim() ? value : null
+  }
+
+  private stringifyStructured(value: unknown): string | null {
+    if (typeof value === 'string') {
+      return value.trim() ? value : null
+    }
+
+    if (value === undefined || value === null) {
+      return null
+    }
+
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return null
+    }
   }
 
   private extractMessageId(payload: unknown): string | undefined {

@@ -32,6 +32,14 @@ declare global {
           clipboardPreview: string
         }
       }>
+      readWorkspaceFile: (filePath: string) => Promise<{
+        ok: boolean
+        path?: string
+        content?: string
+        language?: string
+        truncated?: boolean
+        error?: string
+      }>
       revealWorkspaceInWindows: () => Promise<{ ok: boolean; windowsPath?: string; error?: string }>
       openWorkspaceInWindows: () => Promise<{ ok: boolean; windowsPath?: string; error?: string }>
       readWindowsClipboard: () => Promise<{ ok: boolean; text?: string; error?: string }>

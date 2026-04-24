@@ -1,11 +1,12 @@
 import { LayoutPanelTop } from 'lucide-react'
+import { FilePreview } from './FilePreview'
 import { FileTree } from './FileTree'
 import { TaskList } from './TaskList'
 import { SessionInfo } from './SessionInfo'
 
 export function WorkspacePanel() {
   return (
-    <aside className="flex w-[22rem] shrink-0 flex-col border-l border-white/10 bg-[linear-gradient(180deg,rgba(7,10,18,0.95),rgba(15,23,42,0.92))] px-5 py-5">
+    <aside className="flex w-[24rem] shrink-0 flex-col border-l border-white/10 bg-[linear-gradient(180deg,rgba(7,10,18,0.95),rgba(15,23,42,0.92))] px-5 py-5">
       <div className="mb-6 flex items-center gap-3">
         <div className="flex h-11 w-11 items-center justify-center rounded-3xl bg-rose-300/15 text-rose-200">
           <LayoutPanelTop className="h-5 w-5" />
@@ -18,6 +19,7 @@ export function WorkspacePanel() {
 
       <div className="space-y-4 overflow-y-auto pr-1">
         <FileTree />
+        <FilePreview />
         <TaskList />
         <SessionInfo />
       </div>

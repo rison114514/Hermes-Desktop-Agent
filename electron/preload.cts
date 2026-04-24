@@ -15,6 +15,7 @@ const api = {
   getWorkspaceSnapshot: () => ipcRenderer.invoke('workspace:get-snapshot'),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
   getHermesSkills: () => ipcRenderer.invoke('hermes:get-skills'),
+  readWorkspaceFile: (filePath: string) => ipcRenderer.invoke('workspace:read-file', filePath),
   revealWorkspaceInWindows: () => ipcRenderer.invoke('windows:reveal-workspace'),
   openWorkspaceInWindows: () => ipcRenderer.invoke('windows:open-workspace'),
   readWindowsClipboard: () => ipcRenderer.invoke('windows:read-clipboard'),

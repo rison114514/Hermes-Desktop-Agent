@@ -13,6 +13,13 @@ export interface WorkspaceFileNode {
   children?: WorkspaceFileNode[]
 }
 
+export interface WorkspaceFilePreview {
+  path: string
+  content: string
+  language: string
+  truncated: boolean
+}
+
 export interface WindowsInteropState {
   available: boolean
   wslPath: string
@@ -24,6 +31,10 @@ interface WorkspaceStore {
   cwd: string
   session: string
   files: WorkspaceFileNode[]
+  expandedPaths: string[]
+  selectedFilePath: string | null
+  preview: WorkspaceFilePreview | null
+  previewLoading: boolean
   tasks: WorkspaceTask[]
   windows: WindowsInteropState
   setSnapshot: (snapshot: {
@@ -33,6 +44,10 @@ interface WorkspaceStore {
     tasks: WorkspaceTask[]
     windows: WindowsInteropState
   }) => void
+  toggleExpandedPath: (path: string) => void
+  setSelectedFilePath: (path: string | null) => void
+  setPreview: (preview: WorkspaceFilePreview | null) => void
+  setPreviewLoading: (loading: boolean) => void
 }
 
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
@@ -44,6 +59,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     { name: 'PLAN.md', path: 'PLAN.md', type: 'file' },
     { name: 'changelog', path: 'changelog', type: 'directory' },
   ],
+  expandedPaths: ['src', 'electron'],
+  selectedFilePath: null,
+  preview: null,
+  previewLoading: false,
   tasks: [],
   windows: {
     available: false,
@@ -52,7 +71,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     clipboardPreview: '',
   },
   setSnapshot: (snapshot) =>
-    set({
+    set((state) => ({
       cwd: snapshot.cwd,
       session: snapshot.session,
       files: snapshot.files,
@@ -61,5 +80,15 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
         ...snapshot.windows,
         clipboardPreview: snapshot.windows.clipboardPreview ?? '',
       },
-    }),
+      expandedPaths: state.expandedPaths.length ? state.expandedPaths : ['src', 'electron'],
+    })),
+  toggleExpandedPath: (path) =>
+    set((state) => ({
+      expandedPaths: state.expandedPaths.includes(path)
+        ? state.expandedPaths.filter((item) => item !== path)
+        : [...state.expandedPaths, path],
+    })),
+  setSelectedFilePath: (path) => set({ selectedFilePath: path }),
+  setPreview: (preview) => set({ preview }),
+  setPreviewLoading: (previewLoading) => set({ previewLoading }),
 }))

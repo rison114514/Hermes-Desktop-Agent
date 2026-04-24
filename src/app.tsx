@@ -10,12 +10,16 @@ import { useWorkspaceStore } from '@/store/workspace'
 
 export default function App() {
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
+  const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
+  const setPreview = useWorkspaceStore((state) => state.setPreview)
+  const setPreviewLoading = useWorkspaceStore((state) => state.setPreviewLoading)
   const setHermesConfig = useSkillsStore((state) => state.setHermesConfig)
   const setSkills = useSkillsStore((state) => state.setSkills)
   const addMessage = useChatStore((state) => state.addMessage)
   const appendChunk = useChatStore((state) => state.appendChunk)
   const finalizeMessage = useChatStore((state) => state.finalizeMessage)
   const replaceMessage = useChatStore((state) => state.replaceMessage)
+  const upsertToolMessage = useChatStore((state) => state.upsertToolMessage)
   const setActiveAssistant = useChatStore((state) => state.setActiveAssistant)
   const setConnectionLabel = useChatStore((state) => state.setConnectionLabel)
   const touchAssistantMessage = useChatStore((state) => state.touchAssistantMessage)
@@ -40,6 +44,45 @@ export default function App() {
       // 当 IPC 不可用时，保留默认窗口状态。
     })
   }, [setHermesConfig, setSkills, setSnapshot, setWindowState])
+
+  useEffect(() => {
+    if (!window.hermesDesktop || !selectedFilePath) {
+      return
+    }
+
+    let cancelled = false
+    setPreviewLoading(true)
+
+    void window.hermesDesktop.readWorkspaceFile(selectedFilePath).then((result) => {
+      if (cancelled) {
+        return
+      }
+
+      if (!result.ok || !result.path || typeof result.content !== 'string' || !result.language) {
+        setPreview(null)
+        return
+      }
+
+      setPreview({
+        path: result.path,
+        content: result.content,
+        language: result.language,
+        truncated: Boolean(result.truncated),
+      })
+    }).catch(() => {
+      if (!cancelled) {
+        setPreview(null)
+      }
+    }).finally(() => {
+      if (!cancelled) {
+        setPreviewLoading(false)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedFilePath, setPreview, setPreviewLoading])
 
   useEffect(() => {
     if (!window.hermesDesktop) {
@@ -74,6 +117,18 @@ export default function App() {
         }
         setActiveAssistant(null)
         setConnectionLabel(event.payload.reason ? `已完成：${event.payload.reason}` : '空闲')
+        return
+      }
+
+      if (event.type === 'tool') {
+        upsertToolMessage({
+          toolName: event.payload.name,
+          callId: event.payload.id,
+          args: event.payload.args,
+          result: event.payload.result,
+          status: event.payload.status,
+        })
+        setConnectionLabel(event.payload.status === 'completed' ? `工具 ${event.payload.name} 已完成` : `正在调用工具 ${event.payload.name}`)
         return
       }
 
@@ -123,6 +178,7 @@ export default function App() {
     setActiveAssistant,
     setConnectionLabel,
     touchAssistantMessage,
+    upsertToolMessage,
   ])
 
   return (

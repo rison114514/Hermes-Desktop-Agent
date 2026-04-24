@@ -113,12 +113,9 @@ async function createWindow() {
     },
   )
 
-  mainWindow.webContents.on(
-    'render-process-gone',
-    (_event, details) => {
-      console.error('[electron] render-process-gone', details)
-    },
-  )
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[electron] render-process-gone', details)
+  })
 
   mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
     if (typeof detailsOrLevel === 'object' && detailsOrLevel !== null) {
@@ -227,6 +224,8 @@ ipcMain.handle('workspace:get-snapshot', async () => {
       { id: 'task-layout', title: '完成三栏布局骨架', done: true },
       { id: 'task-bridge', title: '接通 Hermes stdio 桥接', done: true },
       { id: 'task-workspace', title: '接入真实工作区文件树', done: true },
+      { id: 'task-preview', title: '支持文件内容预览', done: true },
+      { id: 'task-tools', title: '支持工具调用卡片', done: true },
       { id: 'task-windows', title: '启用 WSL 到 Windows 互操作', done: windows.available },
       { id: 'task-clipboard', title: '打通 Windows 剪贴板能力', done: windows.available },
     ],
@@ -234,6 +233,33 @@ ipcMain.handle('workspace:get-snapshot', async () => {
       ...windows,
       clipboardPreview: '',
     },
+  }
+})
+
+ipcMain.handle('workspace:read-file', async (_event, filePath: string) => {
+  const cwd = process.cwd()
+  const normalized = path.normalize(filePath)
+  const absolutePath = path.resolve(cwd, normalized)
+
+  if (!absolutePath.startsWith(cwd)) {
+    return { ok: false, error: '禁止读取工作区之外的文件。' }
+  }
+
+  try {
+    const content = await readFile(absolutePath, 'utf8')
+    const maxChars = 12000
+    return {
+      ok: true,
+      path: normalized,
+      content: content.slice(0, maxChars),
+      language: inferLanguageFromPath(normalized),
+      truncated: content.length > maxChars,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '读取文件失败。',
+    }
   }
 })
 
@@ -394,9 +420,8 @@ function getTrayIconDataUrl() {
   return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAwUlEQVR4AWOgH2DgPxQMDP9nYGBg+A8E8R8GhoZ/GP5jYGA4gKkGJYbi/6OhoWE4gWQxMDBg+I8RkYHhP0YGBsY/gKQDmRgeIPmPkcHhP8bAwPAfSAbCwPD/MPzHwMDA8B8jAwPDfwyMDAwM/0EwmIGBkf8wMDAw/AdkYGj4j5GBgWE4w2mB4T9GRgaG/xgYGBj+AzIYGBj+Y2BgYPgPZGB4g+Q/RkYGhv8YGhgY/gMyMDB8x8DAwPAfIwMDw38MDAwMDP8B0m0gGQbqYVMAAAAASUVORK5CYII='
 }
 
-
-const WORKSPACE_TREE_MAX_DEPTH = 3
-const WORKSPACE_TREE_MAX_ENTRIES = 80
+const WORKSPACE_TREE_MAX_DEPTH = 4
+const WORKSPACE_TREE_MAX_ENTRIES = 120
 const IGNORED_WORKSPACE_NAMES = new Set(['.git', 'node_modules', 'dist', 'dist-electron'])
 
 async function readWorkspaceTree(rootDir: string): Promise<WorkspaceFileNode[]> {
@@ -460,6 +485,24 @@ async function readWorkspaceDirectory(
   }
 
   return nodes
+}
+
+function inferLanguageFromPath(filePath: string) {
+  const ext = path.extname(filePath).toLowerCase()
+  const map: Record<string, string> = {
+    '.ts': 'typescript',
+    '.tsx': 'tsx',
+    '.js': 'javascript',
+    '.jsx': 'jsx',
+    '.json': 'json',
+    '.md': 'markdown',
+    '.css': 'css',
+    '.html': 'html',
+    '.sh': 'bash',
+    '.yml': 'yaml',
+    '.yaml': 'yaml',
+  }
+  return map[ext] ?? (ext.slice(1) || 'text')
 }
 
 async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
