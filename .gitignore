@@ -11,3 +11,6 @@ pnpm-debug.log*
 Thumbs.db
 .env
 *.local
+.CLAUDE.md
+.claude/
+.codex/

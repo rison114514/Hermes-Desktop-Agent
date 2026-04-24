@@ -41,12 +41,12 @@ function createTray() {
   }
 
   tray = new Tray(nativeImage.createFromDataURL(getTrayIconDataUrl()))
-  tray.setToolTip('Hermes Desktop Agent')
+  tray.setToolTip('Hermes 桌面助手')
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Show / Hide', click: () => toggleWindowVisibility() },
+      { label: '显示 / 隐藏', click: () => toggleWindowVisibility() },
       {
-        label: 'Always On Top',
+        label: '窗口置顶',
         type: 'checkbox',
         checked: mainWindow?.isAlwaysOnTop() ?? true,
         click: (menuItem) => {
@@ -55,7 +55,7 @@ function createTray() {
         },
       },
       { type: 'separator' },
-      { label: 'Quit', click: () => app.quit() },
+      { label: '退出', click: () => app.quit() },
     ]),
   )
   tray.on('click', () => toggleWindowVisibility())
@@ -213,13 +213,13 @@ ipcMain.handle('workspace:get-snapshot', async () => {
 
   return {
     cwd,
-    session: 'desktop-local',
+    session: '本地桌面会话',
     tasks: [
-      { id: 'task-layout', title: 'Scaffold three-column layout', done: true },
-      { id: 'task-bridge', title: 'Wire Hermes stdio bridge', done: false },
-      { id: 'task-workspace', title: 'Add live workspace file tree', done: false },
-      { id: 'task-windows', title: 'Enable WSL to Windows interop actions', done: windows.available },
-      { id: 'task-clipboard', title: 'Bridge Windows clipboard actions', done: windows.available },
+      { id: 'task-layout', title: '完成三栏布局骨架', done: true },
+      { id: 'task-bridge', title: '接通 Hermes stdio 桥接', done: true },
+      { id: 'task-workspace', title: '接入真实工作区文件树', done: false },
+      { id: 'task-windows', title: '启用 WSL 到 Windows 互操作', done: windows.available },
+      { id: 'task-clipboard', title: '打通 Windows 剪贴板能力', done: windows.available },
     ],
     windows: {
       ...windows,
@@ -365,9 +365,9 @@ function updateTrayMenu() {
 
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Show / Hide', click: () => toggleWindowVisibility() },
+      { label: '显示 / 隐藏', click: () => toggleWindowVisibility() },
       {
-        label: 'Always On Top',
+        label: '窗口置顶',
         type: 'checkbox',
         checked: mainWindow?.isAlwaysOnTop() ?? true,
         click: (menuItem) => {
@@ -376,7 +376,7 @@ function updateTrayMenu() {
         },
       },
       { type: 'separator' },
-      { label: 'Quit', click: () => app.quit() },
+      { label: '退出', click: () => app.quit() },
     ]),
   )
 }
@@ -402,8 +402,8 @@ async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
     }
   } catch {
     return {
-      provider: 'unknown',
-      model: 'unavailable',
+      provider: '未知',
+      model: '不可用',
       source: configPath,
     }
   }
@@ -427,7 +427,7 @@ async function readHermesSkillsSnapshot(): Promise<HermesSkillSnapshot[]> {
               id: `${categoryEntry.name}/${entry.name}`,
               name: entry.name,
               category: categoryEntry.name,
-              description: `Installed Hermes skill from ${categoryEntry.name}.`,
+              description: `来自 ${categoryEntry.name} 分类的已安装 Hermes 技能。`,
               enabled: true,
             }))
         }),

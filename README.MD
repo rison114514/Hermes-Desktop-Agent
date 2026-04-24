@@ -1,50 +1,64 @@
 # Hermes Desktop Agent
 
-Hermes Desktop Agent is an Electron-based desktop shell for Hermes Agent, designed to run well inside WSL2/WSLg while still reaching Windows-native capabilities when needed.
+Hermes Desktop Agent 是一个面向 WSL2 / WSLg 场景的 Electron 桌面外壳，用来把 Hermes Agent 以更接近桌面助手的方式运行起来，同时保留与 Windows 原生环境的互操作能力。
 
-It combines three pieces into one workspace:
+它把三部分能力组合到同一个桌面工作区中：
 
-- a desktop chat window for talking to Hermes
-- a bridge from Electron to a local `hermes chat` process over stdio
-- a WSL-to-Windows interop layer for path conversion, Explorer reveal, default-app open, and clipboard access
+- 面向编码任务的桌面聊天窗口
+- Electron 主进程到本地 `hermes chat` 的 stdio 桥接
+- WSL 与 Windows 之间的路径、资源管理器、默认应用、剪贴板互操作
 
-## What it does
+## 项目定位
 
-- Electron desktop app with a custom title bar, always-on-top toggle, minimize, tray menu, and `Super+H` global shortcut
-- React + Vite + Tailwind renderer with a three-panel layout:
-  - Skills panel
-  - Chat panel
-  - Workspace panel
-- Hermes bridge in the main process that normalizes stdout/stderr events and streams assistant responses into the UI
-- Safe preload bridge via `contextBridge`
-- Windows interop helpers for:
-  - converting WSL paths to Windows paths
-  - revealing the workspace in Windows Explorer
-  - opening the workspace with the Windows default app
-  - reading and writing the Windows clipboard
-- Chat usability improvements:
-  - Markdown-like rendering in message bubbles
-  - inline code and fenced code block display
-  - lightweight built-in code highlighting
-  - `Enter` to send, `Shift+Enter` to insert a newline
+这个项目不是一个普通网页，而是一个常驻桌面的 Hermes 助手壳层。
 
-## Current project status
+核心目标：
 
-Implemented today:
+- 在 WSL2 中运行 Hermes，本体以 Electron 窗口提供交互
+- 适配悬浮窗工作流，支持置顶、最小化、托盘常驻、快捷键唤起
+- 用三栏布局把技能、聊天、工作区上下文放进同一视图
+- 保持未来扩展空间，例如真实文件树、工具调用卡片、会话管理等
 
-- project scaffold and desktop shell are in place
-- window/tray/shortcut behavior is wired
-- Hermes stdio bridge and preload bridge are working
-- Windows interop is connected to the UI
-- chat supports streaming updates, Markdown-style display, and keyboard send
+## 当前能力
 
-Still incomplete:
+已实现：
 
-- workspace file tree is still placeholder data, not a live filesystem tree
-- tool calls and tool results do not yet have dedicated rich cards
-- Markdown support is intentionally lightweight rather than full CommonMark
+- Electron 桌面窗口
+  - 自定义标题栏
+  - 置顶切换
+  - 最小化
+  - 托盘菜单
+  - `Super+H` 全局快捷键
+- React + Vite + Tailwind 渲染层三栏布局
+  - 左侧技能面板
+  - 中间聊天面板
+  - 右侧工作区面板
+- Hermes 主进程桥接
+  - 启动本地 `hermes chat --source desktop`
+  - 接收 stdout / stderr
+  - 归一化流式事件并推送到前端
+- preload 安全桥接
+  - 使用 `contextBridge` 向渲染层暴露有限 API
+- Windows 互操作
+  - WSL 路径转 Windows 路径
+  - 在 Explorer 中定位工作区
+  - 用 Windows 默认程序打开工作区
+  - 读写 Windows 剪贴板
+- 聊天体验增强
+  - 支持流式响应显示
+  - 支持轻量 Markdown 渲染
+  - 支持行内代码与代码块展示
+  - 内置轻量代码高亮
+  - `Enter` 发送，`Shift+Enter` 换行
 
-## Tech stack
+## 当前仍未完成
+
+- 工作区文件树目前还是占位数据，不是真实文件系统树
+- 工具调用 / 工具结果还没有专门的富卡片展示
+- 当前 Markdown 为轻量自实现，暂未覆盖完整 CommonMark 语法
+- 生产模式下仍可继续补强 CSP 与安全细节
+
+## 技术栈
 
 - Electron
 - React 19
@@ -54,135 +68,151 @@ Still incomplete:
 - Framer Motion
 - Zustand
 
-## Project structure
+## 目录结构
 
 ```text
 hermes-desktop-agent/
-├── electron/                 # Electron main process, preload, Hermes bridge, Windows interop
-├── src/                      # React renderer
-│   ├── components/           # Shared UI pieces
-│   ├── panels/               # Skills / Chat / Workspace panels
-│   ├── store/                # Zustand stores
-│   └── lib/                  # Small utilities
-├── scripts/                  # Helper scripts such as dbus launcher
-├── changelog/                # Daily development notes
-├── PLAN.md                   # Working implementation plan
+├── electron/                 # Electron 主进程、preload、Hermes 桥、Windows 互操作
+├── src/                      # React 渲染层
+│   ├── components/           # 通用组件
+│   ├── panels/               # Skills / Chat / Workspace 三个面板
+│   ├── store/                # Zustand 状态管理
+│   └── lib/                  # 小型工具函数
+├── scripts/                  # 辅助脚本，例如 dbus 启动包装
+├── changelog/                # 每日开发记录
+├── PLAN.md                   # 当前实现计划与架构说明
 ├── package.json
 └── README.MD
 ```
 
-## Requirements
+## 运行环境要求
 
-Recommended environment:
+推荐环境：
 
-- Linux under WSL2 with WSLg available
+- WSL2 + WSLg
 - Node.js 20+
 - npm 10+
-- Hermes CLI installed and available on `PATH`
-- a configured Hermes home directory, typically `~/.hermes/`
+- 本机已安装 Hermes CLI，并且 `hermes` 在 `PATH` 中可执行
+- 已存在 Hermes 用户目录，通常为 `~/.hermes/`
 
-For Windows interop features, the environment should also expose:
+若要启用 Windows 互操作，环境中还需要可用：
 
 - `wslpath`
 - `powershell.exe`
-- Windows clipboard access from WSL
+- WSL 对 Windows 剪贴板的访问能力
 
-## Install
+## 安装依赖
 
-If dependencies are not already installed:
+如果当前目录尚未安装依赖：
 
 ```bash
 npm install
 ```
 
-If Electron postinstall is blocked in your environment, you may need the same workaround noted in the changelog:
+如果 Electron 的 postinstall 在你的环境里受限，也可以使用之前开发日志中的回避方式：
 
 ```bash
 npm install --ignore-scripts
 ```
 
-## Development
+## 开发模式
 
-Start the full desktop app in development mode:
+启动开发环境：
 
 ```bash
 npm run dev
 ```
 
-This runs:
+该命令会同时启动：
 
-- Vite dev server for the renderer
-- TypeScript watch build for Electron code
-- Electron itself, pointed at the local Vite server
+- Vite 渲染层开发服务器
+- Electron 代码的 TypeScript watch 编译
+- 指向本地 Vite 服务的 Electron 应用
 
-When the app is running:
+应用运行后可用的桌面交互：
 
-- `Super+H` toggles window visibility
-- tray menu supports show/hide, always-on-top, and quit
-- the title bar supports pin, minimize, and close app
+- `Super+H`：显示 / 隐藏窗口
+- 托盘菜单：显示隐藏、置顶切换、退出
+- 标题栏：置顶、最小化、关闭应用
 
-## Production build
+## 构建与预览
 
-Build both renderer and Electron code:
+构建渲染层与 Electron 代码：
 
 ```bash
 npm run build
 ```
 
-Preview the built app:
+预览构建后的桌面应用：
 
 ```bash
 npm run electron:preview
 ```
 
-## Basic usage
+## 基本使用方法
 
-### 1. Launch the app
+### 1. 启动应用
 
-Run `npm run dev` while developing, or `npm run electron:preview` after building.
+开发时运行：
 
-### 2. Send a prompt to Hermes
+```bash
+npm run dev
+```
 
-Type into the chat box and:
+构建完成后运行：
 
-- press `Enter` to send
-- press `Shift+Enter` to add a new line
+```bash
+npm run electron:preview
+```
 
-Hermes responses stream into the chat panel as they arrive.
+### 2. 在聊天框中向 Hermes 发起任务
 
-### 3. Read chat output
+在输入框中输入内容后：
 
-Assistant messages support:
+- 按 `Enter` 直接发送
+- 按 `Shift+Enter` 插入换行
 
-- headings
-- lists
-- blockquotes
-- links
-- inline code
-- fenced code blocks
+Hermes 的输出会以流式方式逐步显示在中间聊天面板。
 
-### 4. Use workspace interop actions
+### 3. 阅读聊天结果
 
-From the workspace panel you can:
+当前消息气泡支持以下常见内容：
 
-- inspect the current WSL workspace path
-- see the mapped Windows path when available
-- reveal the workspace in Explorer
-- open it with the Windows default app
-- read from or write to the Windows clipboard
+- 标题
+- 无序 / 有序列表
+- 引用块
+- 链接
+- 行内代码
+- fenced code block 代码块
 
-### 5. Check the active Hermes config
+### 4. 使用工作区互操作能力
 
-The skills/config panel reads the current Hermes provider/model from `~/.hermes/config.yaml` and also lists installed Hermes skills discovered from `~/.hermes/skills/`.
+右侧工作区面板目前可以：
 
-## Notes and caveats
+- 查看当前 WSL 工作目录
+- 查看映射后的 Windows 路径
+- 在 Windows Explorer 中定位当前工作区
+- 用 Windows 默认程序打开当前工作区
+- 读取 Windows 剪贴板
+- 把 Windows 路径复制到剪贴板
 
-- The app expects `hermes` to be invokable from the Electron process environment.
-- In sandboxed environments, local port binding for Vite may require elevated execution.
-- Production Electron runs may still show development-oriented security warnings until a stricter CSP is added.
-- The current Markdown renderer is custom and intentionally dependency-light.
+### 5. 查看当前 Hermes 配置
 
-## Useful commands
+左侧配置区域会从 `~/.hermes/config.yaml` 读取当前 Hermes 的 `provider` 和 `model`，并扫描 `~/.hermes/skills/` 下已安装的技能目录。
+
+目前这里只做真实配置展示，还没有接入交互式切换模型。
+
+## 中文快速上手
+
+最短路径如下：
+
+1. 确保 `hermes` 命令可在终端中直接运行
+2. 在项目根目录执行 `npm run dev`
+3. 等 Electron 窗口打开后，在中间输入框直接描述任务
+4. 用右侧工作区面板检查当前路径、Windows 映射路径和剪贴板内容
+5. 关闭窗口后可通过托盘或 `Super+H` 再次召回
+
+## 常用命令
 
 ```bash
 npm run dev
@@ -190,9 +220,16 @@ npm run build
 npm run electron:preview
 ```
 
-## Changelog
+## 已知说明
 
-Development notes are kept in `changelog/`.
+- Electron 进程需要能直接调用到 `hermes`
+- 在受限沙箱中，Vite 本地端口监听可能需要提升权限
+- 当前 Markdown 渲染是轻量自定义实现，优先保证集成简单与构建稳定
+- 后续如果接入真实文件树、工具卡片与会话管理，README 也需要同步更新
+
+## 开发记录
+
+开发过程日志位于 `changelog/`：
 
 - `changelog/2026-04-23.md`
 - `changelog/2026-04-24.md`

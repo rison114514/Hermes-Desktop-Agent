@@ -27,17 +27,17 @@ export default function App() {
     }
 
     void window.hermesDesktop.getWorkspaceSnapshot().then(setSnapshot).catch(() => {
-      // Keep default placeholder snapshot when the IPC bridge is unavailable.
+      // 当 IPC 不可用时，保留默认占位数据。
     })
     void window.hermesDesktop.getHermesConfig().then(setHermesConfig).catch(() => {
-      // Keep placeholder Hermes config if the preload bridge is unavailable.
+      // 当 preload bridge 不可用时，保留默认配置展示。
     })
     void window.hermesDesktop.getHermesSkills().then(setSkills).catch(() => {
-      // Keep placeholder skill list if the preload bridge is unavailable.
+      // 当 preload bridge 不可用时，保留默认技能列表。
     })
 
     void window.hermesDesktop.getWindowState().then(setWindowState).catch(() => {
-      // Keep default window state when the IPC bridge is unavailable.
+      // 当 IPC 不可用时，保留默认窗口状态。
     })
   }, [setHermesConfig, setSkills, setSnapshot, setWindowState])
 
@@ -49,9 +49,7 @@ export default function App() {
     return window.hermesDesktop.onHermesEvent((event) => {
       if (event.type === 'assistant:start') {
         touchAssistantMessage(event.payload.id ?? null)
-        setConnectionLabel(
-          event.payload.model ? `Responding via ${event.payload.model}` : 'Hermes is responding',
-        )
+        setConnectionLabel(event.payload.model ? `正在通过 ${event.payload.model} 响应` : 'Hermes 正在响应')
         return
       }
 
@@ -62,7 +60,7 @@ export default function App() {
         }
 
         appendChunk(targetId, event.payload.delta)
-        setConnectionLabel('Streaming response')
+        setConnectionLabel('正在流式输出')
         return
       }
 
@@ -75,7 +73,7 @@ export default function App() {
           finalizeMessage(targetId)
         }
         setActiveAssistant(null)
-        setConnectionLabel(event.payload.reason ? `Completed: ${event.payload.reason}` : 'Idle')
+        setConnectionLabel(event.payload.reason ? `已完成：${event.payload.reason}` : '空闲')
         return
       }
 
@@ -90,9 +88,9 @@ export default function App() {
           role: 'system',
           content: event.payload,
           tone: 'error',
-          label: 'stderr',
+          label: '错误输出',
         })
-        setConnectionLabel('Hermes reported an error')
+        setConnectionLabel('Hermes 返回了错误信息')
         return
       }
 
@@ -100,12 +98,12 @@ export default function App() {
         addMessage({
           id: `exit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'system',
-          content: `Hermes process exited${event.payload.code === null ? '' : ` with code ${event.payload.code}`}.`,
+          content: `Hermes 进程已退出${event.payload.code === null ? '' : `，退出码 ${event.payload.code}`}`,
           tone: event.payload.code === 0 ? 'muted' : 'error',
-          label: 'process',
+          label: '进程状态',
         })
         setActiveAssistant(null)
-        setConnectionLabel('Offline')
+        setConnectionLabel('离线')
         return
       }
 
@@ -114,7 +112,7 @@ export default function App() {
         role: 'system',
         content: JSON.stringify(event.payload, null, 2),
         tone: 'muted',
-        label: 'raw',
+        label: '原始事件',
       })
     })
   }, [

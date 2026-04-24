@@ -20,13 +20,13 @@ interface SkillsStore {
 
 export const useSkillsStore = create<SkillsStore>((set) => ({
   provider: 'custom',
-  model: 'loading...',
+  model: '读取中...',
   source: '~/.hermes/config.yaml',
   skills: [
-    { id: 'web', name: 'web', description: 'Browse and verify external information.', enabled: true },
-    { id: 'github', name: 'github', description: 'Work with issues, PRs, and repository metadata.', enabled: false },
-    { id: 'arxiv', name: 'arxiv', description: 'Inspect research papers and technical references.', enabled: false },
-    { id: 'terminal', name: 'terminal', description: 'Use local shell tools in the project workspace.', enabled: true },
+    { id: 'web', name: 'web', description: '浏览并校验外部信息。', enabled: true },
+    { id: 'github', name: 'github', description: '处理仓库、Issue 与 PR 元数据。', enabled: false },
+    { id: 'arxiv', name: 'arxiv', description: '检索论文与技术参考资料。', enabled: false },
+    { id: 'terminal', name: 'terminal', description: '在当前项目工作区执行本地终端命令。', enabled: true },
   ],
   toggleSkill: (id) =>
     set((state) => ({

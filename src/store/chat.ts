@@ -29,13 +29,13 @@ export const useChatStore = create<ChatStore>((set) => ({
     {
       id: 'welcome',
       role: 'assistant',
-      content: 'Hermes Desktop shell is ready. Start with a task, repo question, or workspace command.',
-      label: 'ready',
+      content: 'Hermes 桌面助手已就绪。你可以直接描述代码任务、仓库问题，或让它分析当前工作区。',
+      label: '已就绪',
     },
   ],
   draft: '',
   activeAssistantId: null,
-  connectionLabel: 'Idle',
+  connectionLabel: '空闲',
   setDraft: (draft) => set({ draft }),
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   setActiveAssistant: (id) => set({ activeAssistantId: id }),
@@ -71,7 +71,7 @@ export const useChatStore = create<ChatStore>((set) => ({
             content: '',
             streaming: true,
             tone: 'default',
-            label: 'live',
+            label: '进行中',
           },
         ],
         activeAssistantId: fallbackId,
@@ -89,7 +89,7 @@ export const useChatStore = create<ChatStore>((set) => ({
               content: `${message.content}${chunk}`,
               streaming: true,
               tone: message.tone ?? 'default',
-              label: 'live',
+              label: '进行中',
             }
           : message,
       ),
@@ -97,7 +97,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   replaceMessage: (id, content) =>
     set((state) => ({
       messages: state.messages.map((message) =>
-        message.id === id ? { ...message, content, streaming: true, label: 'live' } : message,
+        message.id === id ? { ...message, content, streaming: true, label: '进行中' } : message,
       ),
     })),
   finalizeMessage: (id) =>

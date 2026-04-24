@@ -32,17 +32,17 @@ export function InputBar() {
       role: 'assistant',
       content: '',
       streaming: true,
-      label: 'pending',
+      label: '等待中',
     })
     setActiveAssistant(assistantId)
-    setConnectionLabel('Sending prompt to Hermes')
+    setConnectionLabel('正在发送消息给 Hermes')
     setDraft('')
 
     if (!window.hermesDesktop) {
-      replaceMessage(assistantId, 'Desktop bridge is unavailable in this renderer context.')
+      replaceMessage(assistantId, '当前渲染进程无法访问桌面桥接能力。')
       finalizeMessage(assistantId)
       setActiveAssistant(null)
-      setConnectionLabel('Bridge unavailable')
+      setConnectionLabel('桌面桥接不可用')
       return
     }
 
@@ -51,11 +51,11 @@ export function InputBar() {
     } catch (error) {
       replaceMessage(
         assistantId,
-        `Unable to reach Hermes process: ${error instanceof Error ? error.message : 'unknown error'}`,
+        `无法连接到 Hermes 进程：${error instanceof Error ? error.message : '未知错误'}`,
       )
       finalizeMessage(assistantId)
       setActiveAssistant(null)
-      setConnectionLabel('Failed to send prompt')
+      setConnectionLabel('发送失败')
     }
   }
 

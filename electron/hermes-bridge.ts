@@ -27,7 +27,7 @@ export class HermesBridge extends EventEmitter {
 
     this.emitEvent({
       type: 'status',
-      payload: { stage: 'boot', detail: 'Hermes process started.' },
+      payload: { stage: 'boot', detail: 'Hermes 进程已启动。' },
     })
 
     this.process.stdout.on('data', (chunk: Buffer) => {
@@ -65,7 +65,7 @@ export class HermesBridge extends EventEmitter {
 
     this.emitEvent({
       type: 'status',
-      payload: { stage: 'queued', detail: 'Message forwarded to Hermes.' },
+      payload: { stage: 'queued', detail: '消息已转发给 Hermes。' },
     })
     this.process?.stdin.write(`${message}\n`)
   }

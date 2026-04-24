@@ -10,8 +10,8 @@ export function SkillsPanel() {
           <Layers3 className="h-5 w-5" />
         </div>
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-amber-200/70">Skills</p>
-          <h2 className="text-lg font-semibold text-white">Tool routing</h2>
+          <p className="text-xs uppercase tracking-[0.3em] text-amber-200/70">技能</p>
+          <h2 className="text-lg font-semibold text-white">工具路由</h2>
         </div>
       </div>
 

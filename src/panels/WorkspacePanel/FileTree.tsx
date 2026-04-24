@@ -8,7 +8,7 @@ export function FileTree() {
     <section className="rounded-[28px] border border-white/10 bg-white/5 p-4">
       <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-white">
         <FolderTree className="h-4 w-4 text-cyan-200" />
-        Workspace
+        文件结构
       </div>
       <div className="space-y-2 text-sm text-slate-300">
         {files.map((file) => (

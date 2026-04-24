@@ -29,7 +29,7 @@ interface WorkspaceStore {
 
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   cwd: '/home/rison/hermes-desktop-agent',
-  session: 'booting',
+  session: '启动中',
   files: ['electron/', 'src/', 'PLAN.md', 'changelog/'],
   tasks: [],
   windows: {

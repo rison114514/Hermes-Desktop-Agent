@@ -11,8 +11,8 @@ export function WorkspacePanel() {
           <LayoutPanelTop className="h-5 w-5" />
         </div>
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-rose-200/70">Workspace</p>
-          <h2 className="text-lg font-semibold text-white">Context + tasks</h2>
+          <p className="text-xs uppercase tracking-[0.3em] text-rose-200/70">工作区</p>
+          <h2 className="text-lg font-semibold text-white">上下文与任务</h2>
         </div>
       </div>
 

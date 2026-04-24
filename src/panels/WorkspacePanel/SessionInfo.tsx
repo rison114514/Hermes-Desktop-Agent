@@ -12,33 +12,33 @@ export function SessionInfo() {
 
   const handleRevealWorkspace = async () => {
     if (!window.hermesDesktop) {
-      setStatus('Desktop bridge unavailable.')
+      setStatus('桌面桥接不可用。')
       return
     }
 
     const result = await window.hermesDesktop.revealWorkspaceInWindows()
-    setStatus(result.ok ? `Opened: ${result.windowsPath}` : result.error ?? 'Failed to open Explorer.')
+    setStatus(result.ok ? `已在资源管理器中打开：${result.windowsPath}` : result.error ?? '打开资源管理器失败。')
   }
 
   const handleOpenWorkspace = async () => {
     if (!window.hermesDesktop) {
-      setStatus('Desktop bridge unavailable.')
+      setStatus('桌面桥接不可用。')
       return
     }
 
     const result = await window.hermesDesktop.openWorkspaceInWindows()
-    setStatus(result.ok ? `Opened with default app: ${result.windowsPath}` : result.error ?? 'Failed to open workspace.')
+    setStatus(result.ok ? `已用默认程序打开：${result.windowsPath}` : result.error ?? '打开工作区失败。')
   }
 
   const handleReadClipboard = async () => {
     if (!window.hermesDesktop) {
-      setStatus('Desktop bridge unavailable.')
+      setStatus('桌面桥接不可用。')
       return
     }
 
     const result = await window.hermesDesktop.readWindowsClipboard()
     if (!result.ok) {
-      setStatus(result.error ?? 'Failed to read clipboard.')
+      setStatus(result.error ?? '读取剪贴板失败。')
       return
     }
 
@@ -52,45 +52,45 @@ export function SessionInfo() {
         clipboardPreview: text,
       },
     })
-    setStatus('Loaded clipboard text from Windows.')
+    setStatus('已读取 Windows 剪贴板内容。')
   }
 
   const handleCopyWindowsPath = async () => {
     if (!window.hermesDesktop) {
-      setStatus('Desktop bridge unavailable.')
+      setStatus('桌面桥接不可用。')
       return
     }
 
     if (!windows.windowsPath) {
-      setStatus('Windows path unavailable.')
+      setStatus('当前没有可用的 Windows 路径。')
       return
     }
 
     const result = await window.hermesDesktop.writeWindowsClipboard(windows.windowsPath)
-    setStatus(result.ok ? 'Copied Windows path to clipboard.' : result.error ?? 'Failed to write clipboard.')
+    setStatus(result.ok ? '已复制 Windows 路径到剪贴板。' : result.error ?? '写入剪贴板失败。')
   }
 
   return (
     <section className="rounded-[28px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
       <div className="mb-4 flex items-center gap-2 font-semibold text-white">
         <Cable className="h-4 w-4 text-cyan-200" />
-        Session
+        会话信息
       </div>
       <div className="space-y-3">
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">id</p>
+          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">ID</p>
           <p className="mt-1">{session}</p>
         </div>
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
           <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
-            <Terminal className="h-3 w-3" /> cwd
+            <Terminal className="h-3 w-3" /> 工作目录
           </div>
           <p className="break-all text-xs leading-5">{cwd}</p>
         </div>
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">windows path</p>
+          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Windows 路径</p>
           <p className="mt-2 break-all text-xs leading-5 text-slate-200">
-            {windows.windowsPath ?? 'Windows interop unavailable in current environment'}
+            {windows.windowsPath ?? '当前环境暂不可用 Windows 互操作'}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
@@ -100,7 +100,7 @@ export function SessionInfo() {
               className="flex items-center gap-2 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs text-cyan-100 transition enabled:hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
             >
               <ExternalLink className="h-3.5 w-3.5" />
-              Reveal
+              在资源管理器中定位
             </button>
             <button
               type="button"
@@ -109,7 +109,7 @@ export function SessionInfo() {
               className="flex items-center gap-2 rounded-full border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs text-amber-100 transition enabled:hover:bg-amber-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
             >
               <FolderOpen className="h-3.5 w-3.5" />
-              Open
+              用默认程序打开
             </button>
             <button
               type="button"
@@ -118,13 +118,13 @@ export function SessionInfo() {
               className="flex items-center gap-2 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-xs text-emerald-100 transition enabled:hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
             >
               <Clipboard className="h-3.5 w-3.5" />
-              Copy Path
+              复制路径
             </button>
           </div>
         </div>
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">windows clipboard</p>
+            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Windows 剪贴板</p>
             <button
               type="button"
               onClick={() => void handleReadClipboard()}
@@ -132,11 +132,11 @@ export function SessionInfo() {
               className="flex items-center gap-1 rounded-full border border-fuchsia-300/25 bg-fuchsia-300/10 px-3 py-1.5 text-[11px] text-fuchsia-100 transition enabled:hover:bg-fuchsia-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
             >
               <ClipboardPaste className="h-3.5 w-3.5" />
-              Paste from Windows
+              从 Windows 读取
             </button>
           </div>
           <p className="mt-3 whitespace-pre-wrap break-all text-xs leading-5 text-slate-200">
-            {windows.clipboardPreview || 'No clipboard text loaded yet.'}
+            {windows.clipboardPreview || '尚未读取任何剪贴板内容。'}
           </p>
           {status ? <p className="mt-2 text-[11px] leading-5 text-slate-400">{status}</p> : null}
         </div>

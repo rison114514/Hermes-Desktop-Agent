@@ -218,7 +218,7 @@ function renderCodeBlock(code: string, language?: string) {
   return (
     <div className="mt-3 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/85">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
-        <span>{language ?? 'code'}</span>
+        <span>{language ?? '代码'}</span>
       </div>
       <pre className="overflow-x-auto px-4 py-3 text-[13px] leading-6 text-slate-100">
         <code className="font-mono">
@@ -349,7 +349,7 @@ export function MessageBubble({ message }: { message: Message }) {
       >
         <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
           {badge}
-          {message.streaming ? <span className="text-cyan-200">streaming</span> : null}
+          {message.streaming ? <span className="text-cyan-200">输出中</span> : null}
         </div>
         <div className="space-y-3">{renderMarkdown(message.content)}</div>
       </div>
