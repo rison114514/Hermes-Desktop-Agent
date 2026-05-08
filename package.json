@@ -6,15 +6,20 @@
   "description": "基于 Electron、React 与 Vite 的 Hermes 桌面助手外壳。",
   "main": "dist-electron/electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "dev": "npm run dev:windows",
+    "dev:windows": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron:windows\"",
+    "dev:wslg": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron:wslg\"",
     "dev:renderer": "vite",
     "dev:main": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
-    "dev:electron": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 ./scripts/run-with-dbus.sh electron .",
+    "dev:electron:windows": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "dev:electron:wslg": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 ./scripts/run-with-dbus.sh electron .",
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
     "preview": "vite preview",
-    "electron:preview": "cross-env ELECTRON_IS_DEV=0 ./scripts/run-with-dbus.sh electron ."
+    "electron:preview": "npm run electron:windows",
+    "electron:windows": "cross-env ELECTRON_IS_DEV=0 electron .",
+    "electron:wslg": "cross-env ELECTRON_IS_DEV=0 ./scripts/run-with-dbus.sh electron ."
   },
   "dependencies": {
     "clsx": "^2.1.1",

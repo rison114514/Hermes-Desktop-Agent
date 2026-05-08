@@ -1,6 +1,36 @@
-# Hermes Desktop Agent — 实现计划
+# Hermes Desktop Agent - Windows Native + WSL ACP 实现计划
 
-> 方案：桌面悬浮助手优先，运行于 WSL2 + WSLg，同时保留 WSL2 与 Windows 的双向通讯能力
+> 新方案：Electron/React 作为 Windows 原生桌面前端运行；Hermes 后端只在 WSL2 内启动；主通信链路改为通过 `wsl.exe -d <distro> -- hermes acp` 建立 ACP stdio 会话。
+
+---
+
+## 目标结论
+
+当前项目要从“WSLg 中运行 Electron，同时保留 Windows 互操作”调整为“Windows 原生 Electron 是唯一优先入口，WSL 只承载 Hermes 后端执行环境”。
+
+这样做的核心原因：
+
+- Windows 原生 Electron 可以获得稳定的中文输入法候选框、托盘、快捷键、窗口焦点和资源管理器体验。
+- Hermes 继续运行在 WSL2，复用 Linux 工具链、用户配置、API key、skills、项目路径和命令执行环境。
+- Electron 主进程不再直接假设自己处在 WSL 内，而是通过 Windows 侧 `wsl.exe` 启动 Hermes ACP 后端。
+- 前后端协议从宽松的 `hermes chat --source desktop` 输出解析，收敛为 ACP over stdio 的长期主链路。
+
+---
+
+## 产品定位
+
+Hermes Desktop Agent 是一个 Windows 桌面助手壳层，不是浏览器网页，也不再以 WSLg Electron 作为主运行方式。
+
+优先形态：
+
+- Windows 原生桌面窗口
+- Windows 原生中文输入法候选框
+- Windows 托盘、置顶、快捷键、窗口状态持久化
+- 通过 WSL2 启动和管理 Hermes 后端
+- 通过 ACP 维护会话、消息、工具调用和状态事件
+- 工作区路径同时暴露 Windows 路径和 WSL 路径，但所有 Hermes 任务默认在 WSL 路径中执行
+
+WSLg 只作为开发或回退路径保留，不再作为 README 和计划中的首选方案。
 
 ---
 
@@ -8,379 +38,461 @@
 
 | 层次 | 选型 |
 |---|---|
-| 桌面运行时 | Electron 33+ |
-| 前端框架 | React 19 + TypeScript + Vite |
-| 样式 | Tailwind CSS v4 + Framer Motion |
-| UI 组件 | shadcn/ui |
+| 桌面运行时 | Windows 原生 Electron |
+| 渲染层 | React 19 + TypeScript + Vite |
+| 样式与动效 | Tailwind CSS v4 + Framer Motion |
 | 状态管理 | Zustand |
-| Hermes 通信 | JSON-RPC over stdio（复用 TUI 协议） |
-| WSL2 / Windows 桥接 | PowerShell / `wslpath` / Windows 文件系统映射 / 剪贴板与启动器桥接 |
+| 后端启动 | `wsl.exe -d <distro> -- hermes acp` |
+| 主通信协议 | ACP over stdio |
+| 路径桥接 | Windows path / UNC WSL path / WSL POSIX path 映射 |
+| Windows 能力 | Explorer、剪贴板、全局快捷键、托盘、默认程序 |
+| WSL 能力 | Hermes config、skills、workspace、shell/tool execution |
 
 ---
 
-## 系统架构
+## 新系统架构
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
-│                   Electron Main Process                    │
-│                                                            │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐ │
-│  │WindowManager│  │HermesProcess │  │WindowsInterop     │ │
-│  │悬浮窗/置顶/ │  │Manager       │  │路径转换/剪贴板/    │ │
-│  │隐藏唤醒     │  │spawn + pipe  │  │启动器/系统能力桥接 │ │
-│  └──────┬──────┘  └──────┬───────┘  └─────────┬─────────┘ │
-│         │                │                    │           │
-│         └────────────────┴──────IPC───────────┘           │
+│                 Windows Desktop Surface                     │
+│  IME / Tray / Shortcut / Explorer / Clipboard / Focus        │
 └──────────────────────┬──────────────────────────────────────┘
-                       │ contextBridge (安全隔离)
-┌──────────────────────┴──────────────────────────────────────┐
-│                Electron Renderer (React)                   │
-│                                                            │
-│  ┌────────────┬──────────────────┬──────────────────────┐  │
-│  │SkillsPanel │   ChatPanel      │WorkspacePanel        │  │
-│  │  左侧栏    │   中央主区        │Windows/WSL Context   │  │
-│  └────────────┴──────────────────┴──────────────────────┘  │
-│                    Zustand Store                            │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ JSON-RPC stdio
-┌──────────────────────┴──────────────────────────────────────┐
-│                Hermes Agent (Python / WSL2)                │
-│           hermes chat —— 现有 session/tool 体系             │
-└─────────────────────────────────────────────────────────────┘
                        │
-                       │ Windows integration channel
 ┌──────────────────────┴──────────────────────────────────────┐
-│                   Windows Desktop Surface                   │
-│      快捷方式 / 剪贴板 / Windows 路径 / 文件资源管理器       │
+│              Electron Main Process (Windows)                 │
+│                                                              │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐ │
+│  │ WindowManager  │  │ AcpBridge      │  │ WindowsHost    │ │
+│  │ native window  │  │ spawn wsl.exe  │  │ file/clipboard │ │
+│  │ tray/hotkey    │  │ ACP stdio      │  │ path boundary  │ │
+│  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘ │
+│          │                   │                   │          │
+│          └───────────────────┴──── IPC ──────────┘          │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ contextBridge
+┌──────────────────────┴──────────────────────────────────────┐
+│                 Electron Renderer (React)                    │
+│                                                              │
+│  ┌──────────────┬────────────────────┬────────────────────┐ │
+│  │ SkillsPanel  │ ChatPanel          │ WorkspacePanel     │ │
+│  │ config view  │ ACP conversation   │ path/files/session │ │
+│  └──────────────┴────────────────────┴────────────────────┘ │
+│                      Zustand Store                           │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       │ stdio: ACP frames
+                       │ launched by Windows host
+┌──────────────────────┴──────────────────────────────────────┐
+│                         wsl.exe                              │
+│      wsl.exe -d <distro> --cd <wsl-workspace> -- hermes acp   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────┴──────────────────────────────────────┐
+│                    Hermes Backend (WSL2)                     │
+│  config / skills / tools / shell / workspace / session state  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 产品定位
+## 关键边界
 
-- 目标形态是独立桌面助手，而不是浏览器网页
-- 默认以悬浮小窗运行，可置顶、隐藏、召回、托盘常驻
-- 前端虽由 React 渲染，但只服务于 Electron 窗体
-- Hermes 继续运行在 WSL2 内，应用本体优先贴合桌面助手交互
-- 保留与 Windows 的互操作能力，用于路径跳转、剪贴板、文件打开、启动入口等
+### Windows 前端边界
 
----
+Windows 侧负责：
 
-## 布局设计（悬浮助手版）
+- Electron 进程生命周期
+- 原生窗口、托盘、快捷键、置顶、最小化、关闭
+- 中文输入法候选框验证
+- Windows 文件树读取和预览，前提是当前 workspace 是 Windows 路径
+- Explorer 打开和定位
+- Windows 剪贴板读写
+- 启动、停止、重启 WSL 内 Hermes ACP 后端
+- 维护 ACP stdio framing、请求 ID、超时、错误展示
 
-```
-┌──────────────────────────────────────────────────────┐
-│ ⚕ Hermes          [skills][workspace]  [─][□][×]    │
-├─────────────┬────────────────────────┬───────────────┤
-│             │                        │               │
-│  SKILLS     │      CHAT              │  WORKSPACE    │
-│  ─────────  │  ─────────────────     │  ──────────   │
-│  □ web      │  ┌─ Assistant ───────┐ │  📁 ~/proj   │
-│  □ github   │  │ 你好，有什么可以  │ │    ├ src/    │
-│  □ arxiv    │  │ 帮你的？         │ │    └ README  │
-│  ■ terminal │  └──────────────────┘ │               │
-│             │  ┌─ User ────────────┐ │  📋 Tasks    │
-│  CONFIG     │  │ 帮我分析这个文件  │ │  ─────────   │
-│  ─────────  │  └──────────────────┘ │  ○ task 1    │
-│  model:     │                        │  ● task 2    │
-│  doubao-... │  ┌────────────────────┐│               │
-│             │  │ 输入消息...    [↑] ││  🔌 Session  │
-│             │  └────────────────────┘│  abc123...   │
-└─────────────┴────────────────────────┴───────────────┘
-```
+Windows 侧不负责：
 
----
+- 执行 Hermes tool
+- 直接读取 WSL 内部 `~/.hermes`，除非通过 `wsl.exe` 或 UNC 路径明确访问
+- 假设 `wslpath`、`powershell.exe` 存在于当前 PATH。Windows 原生 host 下应优先使用 Node/Electron/Windows API 或 `wsl.exe`。
 
-## 目录结构
+### WSL 后端边界
 
-```
-hermes-desktop-agent/
-├── electron/
-│   ├── main.ts              # 主进程：窗口、托盘、IPC
-│   ├── preload.ts           # contextBridge 安全暴露 API
-│   └── hermes-bridge.ts     # Hermes 子进程管理 + JSON-RPC
-│   └── windows-interop.ts   # WSL2 <-> Windows 互操作封装
-├── src/
-│   ├── app.tsx
-│   ├── store/
-│   │   ├── chat.ts          # 消息历史、流式输出
-│   │   ├── skills.ts        # 技能列表、启用状态
-│   │   └── workspace.ts     # 项目路径、session
-│   ├── panels/
-│   │   ├── ChatPanel/
-│   │   │   ├── MessageList.tsx
-│   │   │   ├── MessageBubble.tsx
-│   │   │   └── InputBar.tsx
-│   │   ├── SkillsPanel/
-│   │   │   ├── SkillList.tsx
-│   │   │   └── ModelConfig.tsx
-│   │   └── WorkspacePanel/
-│   │       ├── FileTree.tsx
-│   │       ├── TaskList.tsx
-│   │       └── SessionInfo.tsx
-│   └── components/
-│       ├── TitleBar.tsx     # 自定义无边框标题栏
-│       └── ResizeHandle.tsx
-├── package.json
-├── vite.config.ts
-├── PLAN.md                  # 本文件
-└── .env                     # 本地环境变量（不入库）
-```
+WSL 侧负责：
+
+- 运行 `hermes acp`
+- 读取 `~/.hermes/config.yaml`
+- 扫描 `~/.hermes/skills/`
+- 在 WSL workspace 中执行任务
+- 通过 ACP 返回消息、工具调用、工具结果、状态和错误
+
+WSL 侧不负责：
+
+- Electron GUI
+- Windows IME
+- Windows 托盘和窗口焦点
+- Windows Explorer 和剪贴板原生体验
 
 ---
 
-## 关键实现细节
+## ACP 主链路设计
 
-### 1. 桌面悬浮窗配置（electron/main.ts）
+### 启动命令
 
-```typescript
-const win = new BrowserWindow({
-  width: 900, height: 620,
-  frame: false,
-  transparent: false,
-  alwaysOnTop: true,
-  skipTaskbar: false,
-  resizable: true,
-  movable: true,
-  fullscreenable: false,
-  webPreferences: {
-    preload: path.join(__dirname, 'preload.js'),
-    contextIsolation: true,
-    nodeIntegration: false,
-  }
-})
+基础形式：
+
+```powershell
+wsl.exe -d <distro> -- hermes acp
 ```
 
-全局快捷键唤醒：
-```typescript
-globalShortcut.register('Super+H', () => {
-  win.isVisible() ? win.hide() : win.show()
-})
+带工作目录的目标形式：
+
+```powershell
+wsl.exe -d <distro> --cd <wsl-workspace> -- hermes acp
 ```
 
-补充行为目标：
+Electron 主进程中由 `AcpBridge` 管理：
 
-- 首次启动定位到桌面右侧或上次停靠位置
-- 支持一键隐藏到托盘，保持 Hermes 会话不断开
-- 支持 `always-on-top` 开关，适应不同工作流
-- 后续可扩展为边缘吸附、透明度调节、点击外部自动收起
+- 从配置读取 distro 名称，默认允许使用 `wsl.exe -l -q` 的默认发行版
+- 把 Windows workspace 映射为 WSL path
+- spawn `wsl.exe`，stdio 设为 pipe
+- 按 ACP framing 读写消息
+- 向渲染层推送连接状态、会话状态和错误事件
+- 后端退出时进入离线状态，允许用户手动重连
 
-### 2. Hermes 通信桥（electron/hermes-bridge.ts）
+### 协议层职责
 
-```typescript
-import { spawn, ChildProcess } from 'child_process'
+需要新增或重构 `electron/hermes-bridge.ts` 为 ACP bridge：
 
-let hermes: ChildProcess | null = null
+- `start()`：启动 WSL ACP 后端
+- `stop()`：终止子进程
+- `restart()`：重启后端
+- `sendUserMessage()`：发送用户输入
+- `sendCancel()`：取消当前请求
+- `requestSessionSnapshot()`：拉取当前会话/模型/能力
+- `handleFrame()`：解析 ACP frame 并归一化事件
 
-export function startHermes() {
-  hermes = spawn('hermes', ['chat', '--source', 'desktop'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env }
-  })
+渲染层不要直接理解 ACP 细节，只消费前端稳定事件：
 
-  hermes.stdout!.on('data', (chunk: Buffer) => {
-    const lines = chunk.toString().split('\n').filter(Boolean)
-    lines.forEach(line => {
-      try {
-        const event = JSON.parse(line)
-        mainWindow.webContents.send('hermes:event', event)
-      } catch { /* 非 JSON 行（spinner 等）忽略 */ }
-    })
-  })
-}
-
-export function sendMessage(text: string) {
-  hermes?.stdin?.write(text + '\n')
-}
-```
-
-### 3. WSL2 与 Windows 通讯桥（electron/windows-interop.ts）
-
-```typescript
-import { execFile } from 'node:child_process'
-
-export function toWindowsPath(pathInWsl: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('wslpath', ['-w', pathInWsl], (error, stdout) => {
-      if (error) return reject(error)
-      resolve(stdout.trim())
-    })
-  })
-}
-
-export function revealInExplorer(pathInWsl: string) {
-  return toWindowsPath(pathInWsl).then((winPath) =>
-    execFile('powershell.exe', ['-NoProfile', '-Command', 'Start-Process', 'explorer.exe', winPath]),
-  )
-}
-```
-
-桥接职责：
-
-- WSL 路径与 Windows 路径互转
-- 从应用中直接打开 Windows 资源管理器或默认程序
-- 访问 Windows 剪贴板、通知、启动器入口
-- 为后续“Windows 侧唤醒应用、WSL2 侧执行 Hermes”提供统一边界
-
-### 4. 流式消息渲染（src/store/chat.ts）
-
-```typescript
-import { create } from 'zustand'
-
-interface Message {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  streaming?: boolean
-}
-
-interface ChatStore {
-  messages: Message[]
-  addMessage: (msg: Message) => void
-  appendChunk: (id: string, chunk: string) => void
-  finalizeMessage: (id: string) => void
-}
-
-export const useChatStore = create<ChatStore>((set) => ({
-  messages: [],
-  addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
-  appendChunk: (id, chunk) => set((s) => ({
-    messages: s.messages.map((m) =>
-      m.id === id ? { ...m, content: m.content + chunk } : m
-    )
-  })),
-  finalizeMessage: (id) => set((s) => ({
-    messages: s.messages.map((m) =>
-      m.id === id ? { ...m, streaming: false } : m
-    )
-  }))
-}))
-```
-
-### 5. 三栏布局核心（src/app.tsx）
-
-```tsx
-export default function App() {
-  return (
-    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 rounded-xl overflow-hidden">
-      <TitleBar />
-      <div className="flex flex-1 overflow-hidden">
-        <SkillsPanel className="w-56 shrink-0 border-r border-zinc-800" />
-        <ChatPanel className="flex-1" />
-        <WorkspacePanel className="w-64 shrink-0 border-l border-zinc-800" />
-      </div>
-    </div>
-  )
-}
-```
+- `connection:status`
+- `assistant:start`
+- `assistant:delta`
+- `assistant:done`
+- `tool:start`
+- `tool:delta`
+- `tool:done`
+- `session:update`
+- `backend:error`
+- `backend:exit`
 
 ---
 
-## 实现阶段
+## 路径模型
 
-| 阶段 | 内容 | 目标产出 |
+新方案必须显式区分三类路径：
+
+| 类型 | 示例 | 用途 |
 |---|---|---|
-| **P1** 脚手架 | Electron + Vite + React + Tailwind，悬浮窗、托盘、快捷键 `Super+H` | 独立桌面助手可启动 |
-| **P2** 布局骨架 | 三栏布局，可拖拽分隔条，折叠/展开面板，自定义标题栏 | 悬浮助手界面骨架完成 |
-| **P3** Hermes 桥 | stdio 子进程管理，连接状态指示，重连逻辑 | 可与 WSL2 中的 Hermes 通信 |
-| **P4** Windows 互操作 | 路径转换、Explorer 打开、Windows 剪贴板与通知桥接 | WSL2 / Windows 联动可用 |
-| **P5** 聊天功能 | 流式消息渲染，Markdown + 代码高亮，工具调用卡片展示 | 完整聊天体验 |
-| **P6** 技能面板 | 读取 `~/.hermes/skills/`，启用/禁用开关，快速斜杠命令入口 | 技能可视化管理 |
-| **P7** 工作区面板 | 项目路径切换，session 历史列表，todo 列表，Windows 资源跳转 | 上下文可管理 |
-| **P8** 精修 | 动画、毛玻璃、键盘导航、边缘吸附、窗口记忆 | 生产级桌面助手品质 |
+| Windows path | `E:\Hermes-Desktop-Agent` | Windows Electron、Explorer、Windows 文件树 |
+| WSL POSIX path | `/mnt/e/Hermes-Desktop-Agent` | `wsl.exe --cd`、Hermes workspace |
+| WSL UNC path | `\\wsl.localhost\Ubuntu\home\rison\project` | Windows 访问 WSL 文件系统时使用 |
+
+### 路径转换原则
+
+- Windows host 下不再调用 `wslpath` 作为默认路径转换工具。
+- Windows path 到 WSL path 使用 `wsl.exe -d <distro> -- wslpath -u <windows-path>`。
+- WSL path 到 Windows path 使用 `wsl.exe -d <distro> -- wslpath -w <wsl-path>`。
+- 对 UNC WSL 路径必须识别 distro 和 Linux path，避免误当成本地 Windows 路径。
+- 所有文件预览读取都必须先确认 resolved path 位于当前 workspace root 内。
+- Windows 文件树和 WSL 文件树要分模式处理，不能混用边界判断。
+
+### 工作区模式
+
+首批支持两种模式：
+
+1. `windows-workspace`
+   - Electron 当前目录是 Windows path。
+   - 文件树、预览、Explorer 直接用 Windows API。
+   - 启动 Hermes 前把 workspace 转成 WSL POSIX path。
+
+2. `wsl-workspace`
+   - workspace 来源是 WSL path 或 WSL UNC path。
+   - 文件树可通过 UNC path 读取，或通过 ACP/WSL helper 拉取。
+   - Hermes 直接使用 WSL POSIX path。
+   - Explorer 使用 UNC path 或 Windows 映射路径打开。
 
 ---
 
-## WSL2 / Windows 运行说明
+## 模块改造计划
 
-基础方案仍然是通过 WSLg 直接运行 Electron，这样 Hermes 子进程可在同一侧自然启动；同时预留 Windows 互操作层：
+### 1. package scripts
 
-```bash
-# 首次安装 JS 依赖
-cd /home/rison/hermes-desktop-agent
+新增 Windows 原生脚本：
+
+```json
+{
+  "dev:electron:windows": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+  "electron:windows": "cross-env ELECTRON_IS_DEV=0 electron ."
+}
+```
+
+保留 WSLg 脚本但降级命名：
+
+```json
+{
+  "dev:electron:wslg": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 ./scripts/run-with-dbus.sh electron .",
+  "electron:wslg": "cross-env ELECTRON_IS_DEV=0 ./scripts/run-with-dbus.sh electron ."
+}
+```
+
+最终 `npm run dev` 应优先绑定 Windows 原生 Electron；WSLg 只作为显式 fallback。
+
+### 2. electron/hermes-bridge.ts
+
+改造为 `AcpBridge`：
+
+- Windows 下 spawn `wsl.exe`
+- 参数由配置生成：`-d <distro> --cd <wslWorkspace> -- hermes acp`
+- 删除对 `hermes chat --source desktop` 的默认依赖
+- 保留旧 chat bridge 仅作为临时 fallback，不作为主计划
+- 增加 ACP frame parser/writer
+- 增加 request map、超时、退出码、stderr 归一化
+
+### 3. electron/windows-interop.ts
+
+从“WSL 里调用 Windows 能力”改为“Windows host 原生能力 + WSL path helper”：
+
+- Explorer 打开：使用 Windows path 或 UNC path
+- 默认程序打开：使用 Windows path 或 UNC path
+- 剪贴板：优先 Electron clipboard API 或 Windows 原生能力
+- 路径转换：通过 `wsl.exe ... wslpath`
+- WSL 可用性探测：`wsl.exe --status`、`wsl.exe -l -q`
+- distro 配置和探测结果回传给渲染层
+
+### 4. electron/main.ts
+
+需要拆清 IPC：
+
+- `backend:start`
+- `backend:stop`
+- `backend:restart`
+- `backend:get-status`
+- `hermes:send-message`
+- `workspace:get-snapshot`
+- `workspace:read-file`
+- `workspace:set-root`
+- `windows:reveal-workspace`
+- `windows:open-workspace`
+- `windows:read-clipboard`
+- `windows:write-clipboard`
+
+工作区 snapshot 必须返回：
+
+- `hostPlatform`
+- `workspaceMode`
+- `windowsPath`
+- `wslPath`
+- `uncPath`
+- `distro`
+- `backendStatus`
+
+### 5. src 渲染层
+
+渲染层保持三栏结构，但文案和状态要改成新模型：
+
+- 左侧展示 WSL distro、Hermes provider/model、skills
+- 中间展示 ACP 连接状态和会话消息
+- 右侧展示 Windows path、WSL path、文件树、文件预览、Explorer/clipboard 操作
+- 输入框发送前必须确认 ACP 后端在线；离线时给出重连入口
+
+---
+
+## 阶段计划
+
+### P0 - 文档和目标冻结
+
+目标：
+
+- 重写 `PLAN.md`
+- README 后续改为 Windows 原生优先
+- 明确 WSLg 是 fallback，不再作为主线
+
+验收：
+
+- 文档中不存在“WSLg 直接运行 Electron 是基础方案”的主线描述
+- 后续实现按 Windows host / WSL backend / ACP 三层拆分
+
+### P1 - Windows 原生启动链路
+
+目标：
+
+- 在 Windows PowerShell 中安装 Windows 版 `node_modules`
+- 新增 `npm run electron:windows`
+- 新增或调整 `npm run dev` 以启动 Windows 原生 Electron
+- 保留 `electron:wslg` fallback
+
+验收：
+
+- PowerShell 中 `npm install` 成功
+- `npm run build` 成功
+- `npm run electron:windows` 能打开 Windows 原生窗口
+- 中文输入法候选框出现在输入框附近，不再受 WSLg 限制
+
+### P2 - ACP 后端启动
+
+目标：
+
+- Electron 主进程通过 `wsl.exe -d <distro> -- hermes acp` 启动 Hermes
+- 支持 distro 配置和默认 distro 探测
+- 捕获 stdout/stderr/exit
+- 建立最小 ACP 初始化握手
+
+验收：
+
+- Windows host 下能启动 WSL Hermes ACP 子进程
+- 后端不可用时 UI 明确显示错误
+- 后端退出后 UI 进入离线状态
+- 手动重连可重新启动 ACP 后端
+
+### P3 - ACP 消息与工具事件
+
+目标：
+
+- 实现 ACP frame parser/writer
+- 用户消息通过 ACP 发送
+- assistant delta/done 正常显示
+- tool call/tool result 显示为现有工具卡片或升级后的 ACP 工具卡片
+
+验收：
+
+- 输入一条任务后，Hermes 在 WSL 内处理
+- 流式输出稳定显示
+- 工具调用不会被当成 raw JSON 噪音
+- 取消、错误、退出状态有明确 UI 表达
+
+### P4 - Windows host 工作区边界
+
+目标：
+
+- 修正文件树读取边界
+- 修正文件预览边界
+- 支持 Windows path -> WSL path
+- 支持 WSL path -> Windows/UNC path
+- Explorer 和默认程序打开在 Windows host 下走原生路径
+- 剪贴板读写不再依赖 WSL 内 powershell 调用
+
+验收：
+
+- Windows workspace 下文件树正常
+- 文件预览不能越过 workspace root
+- WSL workspace 或 UNC workspace 不被错误拒绝
+- Explorer 打开的是正确目录
+- 写入剪贴板的是用户当前期望的路径形态
+
+### P5 - 配置、技能和会话信息
+
+目标：
+
+- 通过 ACP 或 WSL helper 读取 Hermes provider/model
+- 扫描 WSL 内 `~/.hermes/skills`
+- 展示当前 distro、workspace、ACP 状态
+- 为后续 session 管理预留结构
+
+验收：
+
+- Windows 前端展示的是 WSL Hermes 的真实配置
+- skills 来源明确来自 WSL
+- UI 不再暗示可以直接在 Windows 本地运行 Hermes
+
+### P6 - README 和交付说明
+
+目标：
+
+- README 改为 Windows 原生优先
+- 安装说明区分 Windows PowerShell 和 WSL
+- 明确 `npm run electron:windows` 是主入口
+- WSLg 说明移动到 fallback/开发排障章节
+- 清理未跟踪文件策略，避免提交本地元数据
+
+验收：
+
+- 新用户按 README 在 Windows PowerShell 中可启动应用
+- README 明确要求 WSL 内可运行 `hermes acp`
+- `CLAUDE.md` 等本地元数据不会进入版本记录
+
+---
+
+## 验证清单
+
+### Windows PowerShell
+
+```powershell
+node --version
+npm --version
 npm install
-
-# 确认 WSLg 可用
-echo $DISPLAY   # 应输出 :0 或类似值
-
-# 启动开发模式
-npm run dev
-
-# 构建
 npm run build
-npm run electron:preview
+npm run electron:windows
 ```
 
-### WSLg / Electron 系统依赖
+### WSL 后端
 
-在 Ubuntu 22.04 的 WSL2 环境中，Electron 至少需要 GTK 运行库；当前已确认缺失 `libgtk-3.so.0` 会直接导致二进制无法启动。
-
-建议先安装完整的一组常用 Electron GUI 依赖：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  libgtk-3-0 \
-  libnotify4 \
-  libnss3 \
-  libxss1 \
-  libxtst6 \
-  xdg-utils \
-  libatspi2.0-0 \
-  libdrm2 \
-  libgbm1 \
-  libasound2
+```powershell
+wsl.exe --status
+wsl.exe -l -q
+wsl.exe -d <distro> -- hermes --version
+wsl.exe -d <distro> -- hermes acp
 ```
 
-如果只补当前已确认的关键缺失项，最小命令是：
+### 路径转换
 
-```bash
-sudo apt-get update
-sudo apt-get install -y libgtk-3-0
+```powershell
+wsl.exe -d <distro> -- wslpath -u "E:\Hermes-Desktop-Agent"
+wsl.exe -d <distro> -- wslpath -w "/mnt/e/Hermes-Desktop-Agent"
 ```
 
-### 运行前自检
+### 输入法
 
-安装系统依赖后，建议按顺序验证：
+- Windows 原生 Electron 窗口中输入中文
+- 候选框应贴近输入框
+- `Enter` 选词和发送消息不能冲突
+- `Shift+Enter` 仍用于换行
 
-```bash
-# 1. 确认 Electron 二进制已存在
-test -x node_modules/electron/dist/electron && echo ok
+### ACP
 
-# 2. 检查是否还有缺失系统库
-ldd node_modules/electron/dist/electron | rg 'not found' || true
+- 启动后端
+- 完成初始化握手
+- 发送普通用户消息
+- 接收 assistant 流式输出
+- 接收工具调用和工具结果
+- 后端异常退出后重连
 
-# 3. 验证 Electron 本体能否启动
-node_modules/electron/dist/electron --version
+---
 
-# 4. 启动桌面应用
-npm run electron:preview
-```
+## 当前已知风险
 
-说明：
+- ACP 具体 frame 和 event schema 需要以 Hermes 当前实现为准，不能继续依赖旧 chat 输出猜测。
+- Windows 与 WSL 双环境会产生两套 `node_modules`，必须明确 PowerShell 安装的是 Windows Electron 依赖。
+- Windows path、WSL POSIX path、UNC path 混用最容易造成文件越界或 Explorer 打开错误，需要优先做结构化路径模型。
+- 中文输入法验证必须在 Windows 原生 Electron 中实测，不能用 WSLg 结论替代。
+- 如果 Hermes ACP 需要 TTY 或特殊环境变量，`wsl.exe` stdio 启动方式需要额外适配。
 
-- 如果第 2 步仍然出现 `not found`，继续补对应 apt 包后再验证
-- 如果第 3 步报 `Gtk-WARNING` 或显示相关错误，优先检查 WSLg、`DISPLAY`、图形会话是否正常
-- 如果第 4 步能拉起窗口但前端空白，再检查 `dist/` 与 `dist-electron/` 是否已重新构建
+---
 
-设计约束：
+## 版本记录策略
 
-- Hermes 子进程在 WSL2 内直接 spawn，路径、配置、API key 全部继承当前环境
-- Electron 窗口仍是独立桌面应用，不要求浏览器参与
-- 需要保留 WSL2 与 Windows 的互通接口，而不是把应用封死在 Linux 侧
-- Windows 侧能力以“辅助集成”为目标，不改变 Hermes 必须运行在 WSL2 内这一前提
+- 应提交：源码、文档、脚本、锁文件中与 Windows 原生运行相关的确定性改动。
+- 应忽略：`node_modules/`、构建产物、日志、本地 `.env`、IDE 私有文件、`CLAUDE.md` 等本地协作元数据。
+- 当前未跟踪的 `Hermes-Desktop-Agent.code-workspace` 需要单独判断：如果只是个人 VS Code 工作区配置，不进入版本记录；如果要作为团队统一入口，需要先确认内容足够通用。
 
-首批保留的 Windows 相关功能：
+---
 
-- 打开 Windows 资源管理器并定位到当前工作区
-- WSL 路径与 Windows 路径双向转换
-- 读取或写入 Windows 剪贴板
-- 预留从 Windows 快捷方式/脚本唤醒 WSLg 应用的入口
+## 下一步执行顺序
 
-### 当前验证状态（2026-04-23）
-
-- `npm run build` 已通过
-- Electron Linux 二进制已手动下载并放入 `node_modules/electron/dist/`
-- 当前已确认的系统级阻塞点是缺少 GTK 运行库
-- 在完成 apt 依赖安装前，无法完成 Electron GUI 实机启动验证
+1. 在 Windows PowerShell 中安装 Windows 版依赖。
+2. 添加 `electron:windows` 和 Windows dev 启动脚本。
+3. 将 Hermes bridge 改造为 `wsl.exe ... hermes acp`。
+4. 实现 ACP 最小握手和消息收发。
+5. 修正 Windows host 下工作区文件树、文件预览、Explorer、剪贴板边界。
+6. 实测 Windows 原生中文输入法候选框。
+7. 更新 README 为 Windows 原生优先。
+8. 清理未跟踪文件并确认版本记录范围。

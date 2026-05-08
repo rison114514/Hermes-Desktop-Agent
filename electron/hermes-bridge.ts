@@ -1,5 +1,7 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import path from 'node:path'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
@@ -11,32 +13,121 @@ export type HermesBridgeEvent =
   | { type: 'raw'; payload: unknown }
   | { type: 'exit'; payload: { code: number | null } }
 
-type ToolExtraction = {
-  id?: string
-  name: string
-  args?: string
-  result?: string
-  status: 'running' | 'completed'
+type JsonRpcMessage = {
+  jsonrpc?: '2.0'
+  id?: number | string
+  method?: string
+  params?: unknown
+  result?: unknown
+  error?: { code?: number; message?: string; data?: unknown }
 }
+
+type PendingRequest = {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timeout: NodeJS.Timeout
+}
+
+const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
 
 export class HermesBridge extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | null = null
   private stdoutBuffer = ''
-  private streamIndex = 0
+  private nextRequestId = 1
+  private pending = new Map<number | string, PendingRequest>()
+  private sessionId: string | null = null
+  private startPromise: Promise<void> | null = null
+  private activeMessageIds = new Set<string>()
+  private promptInFlight = false
 
   start() {
+    if (this.startPromise) {
+      return this.startPromise
+    }
+
+    this.startPromise = this.startBackend()
+    return this.startPromise
+  }
+
+  async sendMessage(text: string) {
+    const message = text.trim()
+    if (!message) {
+      return
+    }
+
+    await this.start()
+
+    if (!this.sessionId) {
+      throw new Error('Hermes ACP 会话尚未就绪。')
+    }
+
+    this.promptInFlight = true
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'queued', detail: '消息已通过 ACP 转发给 WSL Hermes。' },
+    })
+
+    try {
+      const result = await this.sendRequest('session/prompt', {
+        sessionId: this.sessionId,
+        messageId: randomUUID(),
+        prompt: [{ type: 'text', text: message }],
+      }, 10 * 60 * 1000)
+
+      const stopReason = this.readString(result, 'stopReason') ?? this.readString(result, 'stop_reason') ?? 'end_turn'
+      this.emitEvent({
+        type: 'assistant:done',
+        payload: { reason: stopReason },
+      })
+    } finally {
+      this.promptInFlight = false
+    }
+  }
+
+  stop() {
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timeout)
+      pending.reject(new Error('Hermes ACP 后端已停止。'))
+      this.pending.delete(id)
+    }
+
+    this.process?.kill()
+    this.process = null
+    this.stdoutBuffer = ''
+    this.sessionId = null
+    this.startPromise = null
+    this.activeMessageIds.clear()
+  }
+
+  private async startBackend() {
     if (this.process) {
       return
     }
 
-    this.process = spawn('hermes', ['chat', '--source', 'desktop'], {
+    const workspace = process.cwd()
+    const wslWorkspace = windowsPathToWslPath(workspace)
+
+    this.process = spawn('wsl.exe', [
+      '-d',
+      DEFAULT_WSL_DISTRO,
+      '--cd',
+      wslWorkspace,
+      '--',
+      'bash',
+      '-lc',
+      'exec hermes acp --accept-hooks',
+    ], {
       stdio: 'pipe',
+      windowsHide: true,
       env: { ...process.env },
     })
 
     this.emitEvent({
       type: 'status',
-      payload: { stage: 'boot', detail: 'Hermes 进程已启动。' },
+      payload: {
+        stage: 'boot',
+        detail: `正在通过 ${DEFAULT_WSL_DISTRO} 启动 Hermes ACP 后端。`,
+      },
     })
 
     this.process.stdout.on('data', (chunk: Buffer) => {
@@ -47,7 +138,7 @@ export class HermesBridge extends EventEmitter {
     this.process.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8').trim()
       if (text) {
-        this.emitEvent({ type: 'stderr', payload: text })
+        this.handleStderr(text)
       }
     })
 
@@ -55,44 +146,98 @@ export class HermesBridge extends EventEmitter {
       this.emitEvent({ type: 'exit', payload: { code } })
       this.process = null
       this.stdoutBuffer = ''
+      this.sessionId = null
+      this.startPromise = null
+      this.activeMessageIds.clear()
+
+      for (const [id, pending] of this.pending) {
+        clearTimeout(pending.timeout)
+        pending.reject(new Error(`Hermes ACP 后端已退出${code === null ? '' : `，退出码 ${code}`}。`))
+        this.pending.delete(id)
+      }
     })
 
     this.process.on('error', (error) => {
       this.emitEvent({ type: 'stderr', payload: error.message })
     })
-  }
 
-  sendMessage(text: string) {
-    if (!this.process) {
-      this.start()
-    }
+    const init = await this.sendRequest('initialize', {
+      protocolVersion: 1,
+      clientInfo: {
+        name: 'hermes-desktop-agent',
+        version: '0.1.0',
+      },
+      clientCapabilities: {
+        terminal: false,
+        fs: {
+          readTextFile: false,
+          writeTextFile: false,
+        },
+        auth: {
+          terminal: false,
+        },
+      },
+    })
 
-    const message = text.trim()
-    if (!message) {
-      return
+    const model = this.extractCurrentModel(init)
+    this.emitEvent({
+      type: 'status',
+      payload: {
+        stage: 'initialized',
+        detail: model ? `Hermes ACP 已初始化，当前模型 ${model}。` : 'Hermes ACP 已初始化。',
+      },
+    })
+
+    const session = await this.sendRequest('session/new', {
+      cwd: wslWorkspace,
+      mcpServers: [],
+    })
+
+    this.sessionId = this.readString(session, 'sessionId') ?? this.readString(session, 'session_id')
+
+    if (!this.sessionId) {
+      throw new Error('Hermes ACP 未返回 sessionId。')
     }
 
     this.emitEvent({
       type: 'status',
-      payload: { stage: 'queued', detail: '消息已转发给 Hermes。' },
+      payload: { stage: 'ready', detail: `Hermes ACP 会话已就绪：${this.sessionId}` },
     })
-    this.process?.stdin.write(`${message}\n`)
   }
 
-  stop() {
-    this.process?.kill()
-    this.process = null
-    this.stdoutBuffer = ''
+  private sendRequest(method: string, params: unknown, timeoutMs = 30_000) {
+    if (!this.process) {
+      return Promise.reject(new Error('Hermes ACP 后端尚未启动。'))
+    }
+
+    const id = this.nextRequestId++
+    const payload = { jsonrpc: '2.0', id, method, params }
+
+    return new Promise<unknown>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`ACP 请求超时：${method}`))
+      }, timeoutMs)
+
+      this.pending.set(id, { resolve, reject, timeout })
+      this.process?.stdin.write(`${JSON.stringify(payload)}\n`, 'utf8')
+    })
+  }
+
+  private sendResponse(id: number | string, result: unknown) {
+    this.process?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`, 'utf8')
+  }
+
+  private sendError(id: number | string, message: string) {
+    this.process?.stdin.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32603, message },
+    })}\n`, 'utf8')
   }
 
   private flushStdout() {
     while (this.stdoutBuffer) {
-      const framed = this.readContentLengthFrame()
-      if (framed) {
-        this.handlePayloadText(framed)
-        continue
-      }
-
       const newlineIndex = this.stdoutBuffer.indexOf('\n')
       if (newlineIndex === -1) {
         break
@@ -106,508 +251,311 @@ export class HermesBridge extends EventEmitter {
         continue
       }
 
-      this.handlePayloadText(line)
+      try {
+        this.handleJsonRpcMessage(JSON.parse(line) as JsonRpcMessage)
+      } catch {
+        this.emitEvent({ type: 'raw', payload: line })
+      }
     }
   }
 
-  private readContentLengthFrame() {
-    const headerMatch = this.stdoutBuffer.match(/^Content-Length:\s*(\d+)\r?\n/i)
-    if (!headerMatch) {
-      return null
+  private handleJsonRpcMessage(message: JsonRpcMessage) {
+    if (message.id !== undefined && !message.method) {
+      this.handleResponse(message)
+      return
     }
 
-    const headerEnd = this.stdoutBuffer.indexOf('\r\n\r\n') >= 0
-      ? this.stdoutBuffer.indexOf('\r\n\r\n') + 4
-      : this.stdoutBuffer.indexOf('\n\n') >= 0
-        ? this.stdoutBuffer.indexOf('\n\n') + 2
-        : -1
-
-    if (headerEnd === -1) {
-      return null
+    if (message.method) {
+      this.handleRequestOrNotification(message)
+      return
     }
 
-    const contentLength = Number.parseInt(headerMatch[1], 10)
-    const frameEnd = headerEnd + contentLength
-    if (this.stdoutBuffer.length < frameEnd) {
-      return null
-    }
-
-    const body = this.stdoutBuffer.slice(headerEnd, frameEnd)
-    this.stdoutBuffer = this.stdoutBuffer.slice(frameEnd)
-    return body.trim()
+    this.emitEvent({ type: 'raw', payload: message })
   }
 
-  private handlePayloadText(text: string) {
-    const parsed = this.tryParseJson(text)
+  private handleResponse(message: JsonRpcMessage) {
+    const id = message.id
+    if (id === undefined) {
+      return
+    }
 
-    if (parsed === undefined) {
+    const pending = this.pending.get(id)
+    if (!pending) {
+      return
+    }
+
+    clearTimeout(pending.timeout)
+    this.pending.delete(id)
+
+    if (message.error) {
+      pending.reject(new Error(message.error.message ?? 'ACP request failed'))
+      return
+    }
+
+    pending.resolve(message.result)
+  }
+
+  private handleStderr(text: string) {
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+
+    for (const line of lines) {
+      if (/\s\[INFO\]\s/.test(line)) {
+        continue
+      }
+
+      if (/\s\[WARNING\]\s/.test(line)) {
+        this.emitEvent({
+          type: 'status',
+          payload: { stage: 'backend-warning', detail: line },
+        })
+        continue
+      }
+
+      this.emitEvent({ type: 'stderr', payload: line })
+    }
+  }
+
+  private handleRequestOrNotification(message: JsonRpcMessage) {
+    const method = message.method
+    if (!method) {
+      return
+    }
+
+    try {
+      if (method === 'session/update') {
+        this.handleSessionUpdate(message.params)
+        return
+      }
+
+      if (method === 'session/request_permission') {
+        if (message.id !== undefined) {
+          this.sendResponse(message.id, { outcome: choosePermissionOutcome(message.params) })
+        }
+        return
+      }
+
+      if (method.startsWith('terminal/')) {
+        if (message.id !== undefined) {
+          this.sendResponse(message.id, null)
+        }
+        return
+      }
+
+      if (method === 'fs/read_text_file' || method === 'fs/write_text_file') {
+        if (message.id !== undefined) {
+          this.sendError(message.id, 'Hermes Desktop Agent 暂未开放 ACP 文件系统代理。')
+        }
+        return
+      }
+
+      this.emitEvent({ type: 'raw', payload: message })
+
+      if (message.id !== undefined) {
+        this.sendResponse(message.id, null)
+      }
+    } catch (error) {
+      if (message.id !== undefined) {
+        this.sendError(message.id, error instanceof Error ? error.message : 'ACP client handler failed')
+      }
+    }
+  }
+
+  private handleSessionUpdate(payload: unknown) {
+    if (!payload || typeof payload !== 'object') {
+      return
+    }
+
+    const record = payload as Record<string, unknown>
+    const update = record.update
+    if (!update || typeof update !== 'object') {
+      return
+    }
+
+    const updateRecord = update as Record<string, unknown>
+    const kind = this.readString(updateRecord, 'sessionUpdate') ?? this.readString(updateRecord, 'session_update')
+
+    if (kind === 'agent_message_chunk') {
+      const messageId = this.readString(updateRecord, 'messageId') ?? this.readString(updateRecord, 'message_id') ?? undefined
+      const delta = extractAcpText(updateRecord.content)
+      if (!delta) {
+        return
+      }
+
+      if (messageId && !this.activeMessageIds.has(messageId)) {
+        this.activeMessageIds.add(messageId)
+        this.emitEvent({ type: 'assistant:start', payload: { id: messageId } })
+      }
+
       this.emitEvent({
         type: 'assistant:delta',
-        payload: { delta: this.normalizeTextChunk(text) },
+        payload: { id: messageId, delta },
       })
       return
     }
 
-    this.emitNormalizedEvents(parsed)
-  }
-
-  private emitNormalizedEvents(payload: unknown) {
-    const events = this.normalizePayload(payload)
-
-    if (!events.length) {
-      this.emitEvent({ type: 'raw', payload })
+    if (kind === 'agent_thought_chunk') {
+      const delta = extractAcpText(updateRecord.content)
+      if (delta) {
+        this.emitEvent({ type: 'status', payload: { stage: 'thinking', detail: delta } })
+      }
       return
     }
 
-    for (const event of events) {
-      this.emitEvent(event)
-    }
-  }
-
-  private normalizePayload(payload: unknown): HermesBridgeEvent[] {
-    if (typeof payload === 'string') {
-      return [
-        {
-          type: 'assistant:delta',
-          payload: { delta: this.normalizeTextChunk(payload) },
-        },
-      ]
-    }
-
-    if (!payload || typeof payload !== 'object') {
-      return []
-    }
-
-    const record = payload as Record<string, unknown>
-    const method = typeof record.method === 'string' ? record.method : ''
-    const params = this.unwrapJsonRpcPayload(record)
-    const role = this.extractRole(params)
-    const explicitText = this.extractTextCandidate(params)
-    const toolEvent = this.extractToolEvent(method, params) ?? this.extractToolEvent(method, record)
-
-    if (toolEvent) {
-      return [{ type: 'tool', payload: toolEvent }]
-    }
-
-    if (Array.isArray(record.content)) {
-      const text = this.extractTextCandidate(record.content)
-      if (text) {
-        return this.normalizeAssistantTextPayload(record, text)
-      }
-    }
-
-    if (method) {
-      return this.normalizeRpcEvent(method, params, role, explicitText)
-    }
-
-    if (role === 'assistant' && explicitText) {
-      return this.normalizeAssistantTextPayload(params, explicitText)
-    }
-
-    if (explicitText && this.looksStreamy(record)) {
-      return this.normalizeAssistantTextPayload(record, explicitText)
-    }
-
-    const stage =
-      typeof record.status === 'string'
-        ? record.status
-        : typeof record.event === 'string'
-          ? record.event
-          : typeof record.type === 'string'
-            ? record.type
-            : null
-
-    if (stage && explicitText) {
-      return [
-        {
-          type: 'status',
-          payload: { stage, detail: explicitText },
-        },
-      ]
-    }
-
-    return []
-  }
-
-  private normalizeRpcEvent(
-    method: string,
-    payload: unknown,
-    role: string | null,
-    explicitText: string | null,
-  ): HermesBridgeEvent[] {
-    const lowerMethod = method.toLowerCase()
-    const id = this.extractMessageId(payload)
-    const events: HermesBridgeEvent[] = []
-
-    if (
-      lowerMethod.includes('assistant') &&
-      (lowerMethod.includes('start') || lowerMethod.includes('begin'))
-    ) {
-      events.push({
-        type: 'assistant:start',
-        payload: { id, model: this.extractModel(payload) ?? undefined },
-      })
-    }
-
-    if (
-      (lowerMethod.includes('assistant') || role === 'assistant') &&
-      (lowerMethod.includes('delta') || lowerMethod.includes('stream') || lowerMethod.includes('chunk'))
-    ) {
-      if (explicitText) {
-        events.push({
-          type: 'assistant:delta',
-          payload: { id, delta: this.normalizeTextChunk(explicitText) },
-        })
-      }
-      return events
-    }
-
-    if (
-      (lowerMethod.includes('assistant') || role === 'assistant') &&
-      (lowerMethod.includes('done') || lowerMethod.includes('complete') || lowerMethod.includes('final'))
-    ) {
-      events.push({
-        type: 'assistant:done',
+    if (kind === 'tool_call') {
+      this.emitEvent({
+        type: 'tool',
         payload: {
-          id,
-          reason: this.extractFinishReason(payload) ?? undefined,
-          text: explicitText ? this.normalizeTextChunk(explicitText) : undefined,
+          id: this.readString(updateRecord, 'toolCallId') ?? this.readString(updateRecord, 'tool_call_id') ?? undefined,
+          name: this.readString(updateRecord, 'title') ?? this.readString(updateRecord, 'kind') ?? 'tool',
+          args: stringifyMaybe(updateRecord.rawInput),
+          status: 'running',
         },
       })
-      return events
+      return
     }
 
-    if ((lowerMethod.includes('assistant') || role === 'assistant') && explicitText) {
-      return this.normalizeAssistantTextPayload(payload, explicitText)
-    }
-
-    if (explicitText) {
-      return [
-        {
-          type: 'status',
-          payload: { stage: method, detail: explicitText },
-        },
-      ]
-    }
-
-    return events
-  }
-
-  private normalizeAssistantTextPayload(payload: unknown, text: string): HermesBridgeEvent[] {
-    const id = this.extractMessageId(payload)
-    const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
-    const isDone = record ? this.isDonePayload(record) : false
-    const events: HermesBridgeEvent[] = []
-
-    if (this.looksLikeFreshAssistantPayload(record)) {
-      events.push({ type: 'assistant:start', payload: { id, model: this.extractModel(payload) ?? undefined } })
-    }
-
-    if (isDone) {
-      events.push({
-        type: 'assistant:done',
+    if (kind === 'tool_call_update') {
+      this.emitEvent({
+        type: 'tool',
         payload: {
-          id,
-          reason: this.extractFinishReason(payload) ?? undefined,
-          text: this.normalizeTextChunk(text),
+          id: this.readString(updateRecord, 'toolCallId') ?? this.readString(updateRecord, 'tool_call_id') ?? undefined,
+          name: this.readString(updateRecord, 'title') ?? this.readString(updateRecord, 'kind') ?? 'tool',
+          args: stringifyMaybe(updateRecord.rawInput),
+          result: stringifyMaybe(updateRecord.rawOutput) ?? extractToolContent(updateRecord.content),
+          status: 'completed',
         },
       })
-    } else {
-      events.push({
-        type: 'assistant:delta',
-        payload: {
-          id,
-          delta: this.normalizeTextChunk(text),
-        },
-      })
+      return
     }
 
-    return events
+    if (kind === 'usage_update' || kind === 'available_commands_update') {
+      return
+    }
+
+    this.emitEvent({ type: 'raw', payload })
   }
 
-  private unwrapJsonRpcPayload(record: Record<string, unknown>) {
-    if ('params' in record) {
-      return record.params
-    }
-
-    if ('result' in record) {
-      return record.result
-    }
-
-    return record
-  }
-
-  private extractRole(payload: unknown): string | null {
+  private extractCurrentModel(payload: unknown) {
     if (!payload || typeof payload !== 'object') {
       return null
     }
 
     const record = payload as Record<string, unknown>
-    if (typeof record.role === 'string') {
-      return record.role
-    }
-
-    if (typeof record.sender === 'string') {
-      return record.sender
-    }
-
-    if (record.message && typeof record.message === 'object') {
-      return this.extractRole(record.message)
+    const models = record.models
+    if (models && typeof models === 'object') {
+      return this.readString(models as Record<string, unknown>, 'currentModelId')
+        ?? this.readString(models as Record<string, unknown>, 'current_model_id')
     }
 
     return null
   }
 
-  private extractTextCandidate(payload: unknown): string | null {
-    if (typeof payload === 'string') {
-      return payload
-    }
-
-    if (Array.isArray(payload)) {
-      const joined = payload
-        .map((item) => this.extractTextCandidate(item))
-        .filter((item): item is string => Boolean(item))
-        .join('')
-      return joined || null
-    }
-
+  private readString(payload: unknown, key: string) {
     if (!payload || typeof payload !== 'object') {
       return null
     }
 
-    const record = payload as Record<string, unknown>
-    const directKeys = ['delta', 'text', 'content', 'message', 'body', 'output']
-    for (const key of directKeys) {
-      const value = record[key]
-      if (typeof value === 'string' && value.trim()) {
-        return value
-      }
-
-      if (Array.isArray(value)) {
-        const nested = this.extractTextCandidate(value)
-        if (nested) {
-          return nested
-        }
-      }
-
-      if (value && typeof value === 'object') {
-        const nested = this.extractTextCandidate(value)
-        if (nested) {
-          return nested
-        }
-      }
-    }
-
-    if (typeof record.type === 'string' && record.type === 'text' && typeof record.text === 'string') {
-      return record.text
-    }
-
-    return null
-  }
-
-  private extractToolEvent(method: string, payload: unknown): ToolExtraction | null {
-    if (!payload || typeof payload !== 'object') {
-      return null
-    }
-
-    const record = payload as Record<string, unknown>
-    const marker = [method, this.readString(record, 'type'), this.readString(record, 'event'), this.readString(record, 'role')]
-      .filter((value): value is string => Boolean(value))
-      .join(' ')
-      .toLowerCase()
-
-    const nestedFunction = record.function && typeof record.function === 'object' ? (record.function as Record<string, unknown>) : null
-    const nestedTool = record.tool && typeof record.tool === 'object' ? (record.tool as Record<string, unknown>) : null
-    const name =
-      this.readString(record, 'tool_name') ??
-      this.readString(record, 'toolName') ??
-      this.readString(record, 'name') ??
-      this.readString(nestedFunction, 'name') ??
-      this.readString(nestedTool, 'name')
-
-    const args =
-      this.stringifyStructured(record.arguments) ??
-      this.stringifyStructured(record.args) ??
-      this.stringifyStructured(record.input) ??
-      this.stringifyStructured(record.parameters) ??
-      this.stringifyStructured(nestedFunction?.arguments)
-
-    const result =
-      this.stringifyStructured(record.output) ??
-      this.stringifyStructured(record.result) ??
-      this.stringifyStructured(record.response)
-
-    const callId =
-      this.readString(record, 'call_id') ??
-      this.readString(record, 'tool_call_id') ??
-      this.readString(record, 'id')
-
-    const looksToolish =
-      marker.includes('tool') ||
-      marker.includes('function_call') ||
-      marker.includes('function call') ||
-      (Boolean(name) && (args !== null || result !== null))
-
-    if (!looksToolish || !name) {
-      return null
-    }
-
-    const status: 'running' | 'completed' =
-      marker.includes('output') || marker.includes('result') || marker.includes('complete') || marker.includes('done') || result
-        ? 'completed'
-        : 'running'
-
-    return {
-      id: callId ?? undefined,
-      name,
-      args: args ?? undefined,
-      result: result ?? undefined,
-      status,
-    }
-  }
-
-  private readString(record: Record<string, unknown> | null, key: string) {
-    if (!record) {
-      return null
-    }
-
-    const value = record[key]
+    const value = (payload as Record<string, unknown>)[key]
     return typeof value === 'string' && value.trim() ? value : null
-  }
-
-  private stringifyStructured(value: unknown): string | null {
-    if (typeof value === 'string') {
-      return value.trim() ? value : null
-    }
-
-    if (value === undefined || value === null) {
-      return null
-    }
-
-    try {
-      return JSON.stringify(value, null, 2)
-    } catch {
-      return null
-    }
-  }
-
-  private extractMessageId(payload: unknown): string | undefined {
-    if (!payload || typeof payload !== 'object') {
-      return undefined
-    }
-
-    const record = payload as Record<string, unknown>
-    const candidateKeys = ['messageId', 'message_id', 'id', 'turnId', 'turn_id', 'response_id']
-    for (const key of candidateKeys) {
-      const value = record[key]
-      if (typeof value === 'string' && value.trim()) {
-        return value
-      }
-    }
-
-    if (record.message && typeof record.message === 'object') {
-      return this.extractMessageId(record.message)
-    }
-
-    return undefined
-  }
-
-  private extractModel(payload: unknown): string | null {
-    if (!payload || typeof payload !== 'object') {
-      return null
-    }
-
-    const record = payload as Record<string, unknown>
-    if (typeof record.model === 'string') {
-      return record.model
-    }
-
-    if (record.message && typeof record.message === 'object') {
-      return this.extractModel(record.message)
-    }
-
-    return null
-  }
-
-  private extractFinishReason(payload: unknown): string | null {
-    if (!payload || typeof payload !== 'object') {
-      return null
-    }
-
-    const record = payload as Record<string, unknown>
-    const candidateKeys = ['finishReason', 'finish_reason', 'reason', 'stopReason', 'stop_reason']
-    for (const key of candidateKeys) {
-      const value = record[key]
-      if (typeof value === 'string' && value.trim()) {
-        return value
-      }
-    }
-
-    if (record.message && typeof record.message === 'object') {
-      return this.extractFinishReason(record.message)
-    }
-
-    return null
-  }
-
-  private looksStreamy(record: Record<string, unknown>) {
-    return ['delta', 'chunk', 'stream'].some((key) => key in record)
-  }
-
-  private looksLikeFreshAssistantPayload(record: Record<string, unknown> | null) {
-    if (!record) {
-      return true
-    }
-
-    const marker = typeof record.event === 'string' ? record.event.toLowerCase() : ''
-    const type = typeof record.type === 'string' ? record.type.toLowerCase() : ''
-    return marker.includes('start') || type.includes('start')
-  }
-
-  private isDonePayload(record: Record<string, unknown>) {
-    const boolKeys = ['done', 'completed', 'complete', 'final']
-    for (const key of boolKeys) {
-      if (record[key] === true) {
-        return true
-      }
-    }
-
-    const markerKeys = ['event', 'type', 'status']
-    for (const key of markerKeys) {
-      const value = record[key]
-      if (typeof value === 'string') {
-        const lower = value.toLowerCase()
-        if (lower.includes('done') || lower.includes('complete') || lower.includes('final')) {
-          return true
-        }
-      }
-    }
-
-    return false
-  }
-
-  private tryParseJson(text: string) {
-    if (!/^[\[{]/.test(text)) {
-      return undefined
-    }
-
-    try {
-      return JSON.parse(text)
-    } catch {
-      return undefined
-    }
-  }
-
-  private normalizeTextChunk(text: string) {
-    if (!text) {
-      return ''
-    }
-
-    const normalized = text.replace(/\r\n/g, '\n')
-    return this.streamIndex++ === 0 ? normalized : normalized
   }
 
   private emitEvent(event: HermesBridgeEvent) {
     this.emit('event', event)
   }
+}
+
+function windowsPathToWslPath(workspace: string) {
+  const resolved = path.resolve(workspace)
+  const driveMatch = resolved.match(/^([A-Za-z]):\\(.*)$/)
+  if (!driveMatch) {
+    return resolved.replace(/\\/g, '/')
+  }
+
+  const drive = driveMatch[1].toLowerCase()
+  const rest = driveMatch[2].replace(/\\/g, '/')
+  return `/mnt/${drive}/${rest}`
+}
+
+function extractAcpText(content: unknown): string | null {
+  if (!content || typeof content !== 'object') {
+    return null
+  }
+
+  const record = content as Record<string, unknown>
+  if (record.type === 'text' && typeof record.text === 'string') {
+    return record.text
+  }
+
+  const nested = record.content
+  if (nested && typeof nested === 'object') {
+    return extractAcpText(nested)
+  }
+
+  return null
+}
+
+function extractToolContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) {
+    return undefined
+  }
+
+  const text = content
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+
+      const itemRecord = item as Record<string, unknown>
+      return extractAcpText(itemRecord.content ?? item)
+    })
+    .filter((item): item is string => Boolean(item))
+    .join('\n')
+
+  return text || undefined
+}
+
+function stringifyMaybe(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+
+  if (typeof value === 'string') {
+    return value
+  }
+
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return undefined
+  }
+}
+
+function choosePermissionOutcome(payload: unknown) {
+  if (!payload || typeof payload !== 'object') {
+    return { outcome: 'cancelled' }
+  }
+
+  const options = (payload as Record<string, unknown>).options
+  if (!Array.isArray(options)) {
+    return { outcome: 'cancelled' }
+  }
+
+  const allowOption = options.find((option) => {
+    if (!option || typeof option !== 'object') {
+      return false
+    }
+    const record = option as Record<string, unknown>
+    const id = typeof record.optionId === 'string' ? record.optionId.toLowerCase() : ''
+    const name = typeof record.name === 'string' ? record.name.toLowerCase() : ''
+    return id.includes('allow') || name.includes('allow')
+  }) ?? options[0]
+
+  if (!allowOption || typeof allowOption !== 'object') {
+    return { outcome: 'cancelled' }
+  }
+
+  const optionId = (allowOption as Record<string, unknown>).optionId
+  return typeof optionId === 'string'
+    ? { outcome: 'selected', optionId }
+    : { outcome: 'cancelled' }
 }

@@ -98,21 +98,19 @@ export const useChatStore = create<ChatStore>((set) => ({
 
     set((state) => {
       const fallbackId = id ?? state.activeAssistantId
-      if (!fallbackId) {
-        return state
-      }
+      const nextId = fallbackId ?? `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-      const existing = state.messages.find((message) => message.id === fallbackId)
-      resolvedId = fallbackId
+      const existing = state.messages.find((message) => message.id === nextId)
+      resolvedId = nextId
 
       if (existing) {
         return {
           messages: state.messages.map((message) =>
-            message.id === fallbackId
+            message.id === nextId
               ? { ...message, streaming: true, tone: message.tone ?? 'default' }
               : message,
           ),
-          activeAssistantId: fallbackId,
+          activeAssistantId: nextId,
         }
       }
 
@@ -120,7 +118,7 @@ export const useChatStore = create<ChatStore>((set) => ({
         messages: [
           ...state.messages,
           {
-            id: fallbackId,
+            id: nextId,
             role: 'assistant',
             content: '',
             streaming: true,
@@ -129,7 +127,7 @@ export const useChatStore = create<ChatStore>((set) => ({
             kind: 'text',
           },
         ],
-        activeAssistantId: fallbackId,
+        activeAssistantId: nextId,
       }
     })
 
