@@ -35,6 +35,7 @@ WSLg 只作为开发或回退路径保留，不再是推荐运行方式。
   - 读取真实文件树。
   - 文件内容预览带工作区边界检查。
   - 显示 Windows path、WSL POSIX path、UNC path。
+  - 可通过右侧 Workspace 卡片切换普通工作目录。
   - 支持 Explorer 定位、默认程序打开、Windows 剪贴板读写。
 - WSL Hermes 信息
   - 从 WSL `~/.hermes/config.yaml` 读取 provider/model。
@@ -170,6 +171,17 @@ wsl.exe -d Ubuntu-22.04 -- wslpath -w "/mnt/e/Hermes-Desktop-Agent"
 - 切换右侧文件树和预览边界。
 - 调用 ACP `session/load` 恢复对话。
 
+## 工作目录切换
+
+右侧 `Workspace` 卡片显示当前普通工作目录。
+
+- `Change`：打开 Windows 原生目录选择器。
+- `Refresh`：刷新当前工作区快照、文件树和路径信息。
+- 选择目录后会切换文件树、路径信息和文件预览边界。
+- 切换后会在新目录启动新的 ACP session，并重置聊天视图。
+
+普通工作目录不要求一定是 git 仓库。若目录不是 git 仓库，worktree 下拉列表会为空，但聊天和文件预览仍可使用。
+
 ## Worktree 使用
 
 右侧 `Worktree` 区域提供 worktree 管理：
@@ -177,14 +189,16 @@ wsl.exe -d Ubuntu-22.04 -- wslpath -w "/mnt/e/Hermes-Desktop-Agent"
 - 下拉框：列出当前仓库已有 worktree。
 - `Switch`：切换到选中 worktree，并启动新的 ACP session。
 - `New worktree name`：可选，自定义 worktree 名称。
-- `Browse`：打开 Windows 原生目录选择器，选择 worktree 工作目录。
+- `Browse`：打开 Windows 原生目录选择器，选择 worktree 的父目录。
 - `New`：创建 worktree，进入新目录，并启动新的 ACP session。
 
 默认行为：
 
 - 未填写名称时，自动生成 `hermes-<timestamp>-<commit>`。
 - 未选择目标目录时，默认创建到 `<repo>/.worktrees/<name>`。
+- 选择目标目录时，实际创建到 `<选择的目录>/<name>`，不会直接占用已存在的父目录。
 - 自定义名称会生成分支 `hermes/<name>`。
+- 如果同名分支或目录已经存在，会自动追加 `-2`、`-3` 等后缀。
 - 创建或切换 worktree 后，聊天视图会重置为新的 session 上下文。
 
 ## 常用命令

@@ -91,6 +91,8 @@ export function SessionInfo() {
       })
       setStatus(list.length ? `Loaded ${list.length} git worktrees.` : 'No git worktrees found.')
     } catch (error) {
+      setWorktrees([])
+      setSelectedWorktreePath('')
       setStatus(error instanceof Error ? error.message : 'Failed to load worktrees.')
     } finally {
       setSessionLoading(false)
@@ -178,6 +180,50 @@ export function SessionInfo() {
       setStatus(`Switched to ${selectedWorktree.name} and started a new session.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to switch worktree.')
+    } finally {
+      setSessionLoading(false)
+    }
+  }
+
+  const handleSwitchWorkspace = async () => {
+    if (!window.hermesDesktop) {
+      setStatus('Desktop bridge is unavailable.')
+      return
+    }
+
+    setSessionLoading(true)
+    try {
+      const selected = await window.hermesDesktop.selectWorkspaceDirectory()
+      if (selected.canceled || !selected.path) {
+        return
+      }
+
+      const snapshot = await window.hermesDesktop.switchWorkspaceRoot(selected.path)
+      setSnapshot(snapshot)
+      resetForSession(`Started a new ACP session in workspace ${snapshot.cwd}.`)
+      await refreshSessions()
+      await refreshWorktrees()
+      setStatus(`Switched workspace to ${snapshot.cwd}.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to switch workspace.')
+    } finally {
+      setSessionLoading(false)
+    }
+  }
+
+  const handleRefreshWorkspace = async () => {
+    if (!window.hermesDesktop) {
+      setStatus('Desktop bridge is unavailable.')
+      return
+    }
+
+    setSessionLoading(true)
+    try {
+      const snapshot = await window.hermesDesktop.getWorkspaceSnapshot()
+      setSnapshot(snapshot)
+      setStatus(`Refreshed workspace ${snapshot.cwd}.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to refresh workspace.')
     } finally {
       setSessionLoading(false)
     }
@@ -409,8 +455,30 @@ export function SessionInfo() {
         </div>
 
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
-            <Terminal className="h-3 w-3" /> Workspace
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
+              <Terminal className="h-3 w-3" /> Workspace
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleRefreshWorkspace()}
+                disabled={sessionLoading}
+                className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-200 transition enabled:hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-600"
+                title="Refresh workspace"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${sessionLoading ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSwitchWorkspace()}
+                disabled={sessionLoading}
+                className="flex items-center gap-1 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1.5 text-[11px] text-cyan-100 transition enabled:hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                Change
+              </button>
+            </div>
           </div>
           <p className="break-all text-xs leading-5">{cwd}</p>
         </div>

@@ -59,6 +59,8 @@ declare global {
       listHermesWorktrees: () => Promise<DesktopHermesWorktree[]>
       switchHermesWorktree: (worktreePath: string) => Promise<DesktopWorkspaceSnapshot>
       selectWorktreeDirectory: () => Promise<{ canceled: boolean; path?: string }>
+      selectWorkspaceDirectory: () => Promise<{ canceled: boolean; path?: string }>
+      switchWorkspaceRoot: (workspacePath: string) => Promise<DesktopWorkspaceSnapshot>
       getHermesConfig: () => Promise<{ provider: string; model: string; source: string }>
       getHermesSkills: () => Promise<Array<{
         id: string

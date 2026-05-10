@@ -213,7 +213,7 @@ export class HermesBridge extends EventEmitter {
 
     const wslWorkspace = windowsPathToWslPath(this.workspacePath)
 
-    this.process = spawn('wsl.exe', [
+    const child = spawn('wsl.exe', [
       '-d',
       DEFAULT_WSL_DISTRO,
       '--cd',
@@ -227,6 +227,7 @@ export class HermesBridge extends EventEmitter {
       windowsHide: true,
       env: { ...process.env },
     })
+    this.process = child
 
     this.emitEvent({
       type: 'status',
@@ -236,19 +237,29 @@ export class HermesBridge extends EventEmitter {
       },
     })
 
-    this.process.stdout.on('data', (chunk: Buffer) => {
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.process !== child) {
+        return
+      }
       this.stdoutBuffer += chunk.toString('utf8')
       this.flushStdout()
     })
 
-    this.process.stderr.on('data', (chunk: Buffer) => {
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (this.process !== child) {
+        return
+      }
       const text = chunk.toString('utf8').trim()
       if (text) {
         this.handleStderr(text)
       }
     })
 
-    this.process.on('close', (code) => {
+    child.on('close', (code) => {
+      if (this.process !== child) {
+        return
+      }
+
       this.emitEvent({ type: 'exit', payload: { code } })
       this.process = null
       this.stdoutBuffer = ''
@@ -263,7 +274,10 @@ export class HermesBridge extends EventEmitter {
       }
     })
 
-    this.process.on('error', (error) => {
+    child.on('error', (error) => {
+      if (this.process !== child) {
+        return
+      }
       this.emitEvent({ type: 'stderr', payload: error.message })
     })
 

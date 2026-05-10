@@ -11,6 +11,6 @@ interface DesktopWindowStore extends DesktopWindowState {
 
 export const useDesktopWindowStore = create<DesktopWindowStore>((set) => ({
   visible: true,
-  alwaysOnTop: true,
+  alwaysOnTop: false,
   setState: (state) => set((current) => ({ ...current, ...state })),
 }))

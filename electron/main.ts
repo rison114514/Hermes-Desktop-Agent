@@ -76,7 +76,7 @@ function createTray() {
       {
         label: '窗口置顶',
         type: 'checkbox',
-        checked: mainWindow?.isAlwaysOnTop() ?? true,
+        checked: mainWindow?.isAlwaysOnTop() ?? false,
         click: (menuItem) => {
           mainWindow?.setAlwaysOnTop(menuItem.checked)
           void persistCurrentWindowState()
@@ -266,24 +266,19 @@ ipcMain.handle('workspace:switch-worktree', async (_event, worktreePath: string)
   return createWorkspaceSnapshot()
 })
 
+ipcMain.handle('workspace:select-directory', async () => {
+  return selectDirectory('Select workspace directory', workspaceRoot)
+})
+
+ipcMain.handle('workspace:switch-root', async (_event, hostPath: string) => {
+  await assertWorkspaceExists(hostPath)
+  workspaceRoot = hostPath
+  await hermesBridge.startNewSession(workspaceRoot)
+  return createWorkspaceSnapshot()
+})
+
 ipcMain.handle('workspace:select-worktree-directory', async () => {
-  const options: OpenDialogOptions = {
-    title: 'Select worktree directory',
-    defaultPath: workspaceRoot,
-    properties: ['openDirectory', 'createDirectory'],
-  }
-  const result = mainWindow
-    ? await dialog.showOpenDialog(mainWindow, options)
-    : await dialog.showOpenDialog(options)
-
-  if (result.canceled || !result.filePaths[0]) {
-    return { canceled: true }
-  }
-
-  return {
-    canceled: false,
-    path: result.filePaths[0],
-  }
+  return selectDirectory('Select worktree parent directory', workspaceRoot)
 })
 
 ipcMain.handle('workspace:get-snapshot', async () => {
@@ -479,7 +474,7 @@ function updateTrayMenu() {
       {
         label: '窗口置顶',
         type: 'checkbox',
-        checked: mainWindow?.isAlwaysOnTop() ?? true,
+        checked: mainWindow?.isAlwaysOnTop() ?? false,
         click: (menuItem) => {
           mainWindow?.setAlwaysOnTop(menuItem.checked)
           void persistCurrentWindowState()
@@ -493,6 +488,26 @@ function updateTrayMenu() {
 
 function getTrayIconDataUrl() {
   return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAwUlEQVR4AWOgH2DgPxQMDP9nYGBg+A8E8R8GhoZ/GP5jYGA4gKkGJYbi/6OhoWE4gWQxMDBg+I8RkYHhP0YGBsY/gKQDmRgeIPmPkcHhP8bAwPAfSAbCwPD/MPzHwMDA8B8jAwPDfwyMDAwM/0EwmIGBkf8wMDAw/AdkYGj4j5GBgWE4w2mB4T9GRgaG/xgYGBj+AzIYGBj+Y2BgYPgPZGB4g+Q/RkYGhv8YGhgY/gMyMDB8x8DAwPAfIwMDw38MDAwMDP8B0m0gGQbqYVMAAAAASUVORK5CYII='
+}
+
+async function selectDirectory(title: string, defaultPath: string) {
+  const options: OpenDialogOptions = {
+    title,
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory'],
+  }
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options)
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true }
+  }
+
+  return {
+    canceled: false,
+    path: result.filePaths[0],
+  }
 }
 
 async function createWorkspaceSnapshot() {
@@ -535,9 +550,8 @@ async function createHermesWorktree(hostPath: string, options: CreateWorktreeOpt
   const root = await runWslCommand(['git', '-C', wslRoot, 'rev-parse', '--show-toplevel'])
   const short = await runWslCommand(['git', '-C', root, 'rev-parse', '--short', 'HEAD'])
   const stamp = await runWslCommand(['date', '+%Y%m%d-%H%M%S'])
-  const name = normalizeWorktreeName(options.name) ?? `hermes-${stamp}-${short}`
-  const branch = `hermes/${name}`
-  const worktreePath = resolveWorktreePath(root, name, options.directory)
+  const baseName = normalizeWorktreeName(options.name) ?? `hermes-${stamp}-${short}`
+  const { name, branch, worktreePath } = await resolveAvailableWorktreeTarget(root, baseName, options.directory)
 
   await runWslCommand(['mkdir', '-p', path.posix.dirname(worktreePath)])
   await runWslCommand(['git', '-C', root, 'worktree', 'add', worktreePath, '-b', branch, 'HEAD'])
@@ -549,6 +563,24 @@ async function createHermesWorktree(hostPath: string, options: CreateWorktreeOpt
     name,
     root,
   }
+}
+
+async function resolveAvailableWorktreeTarget(root: string, baseName: string, directory?: string) {
+  for (let index = 1; index <= 100; index += 1) {
+    const name = index === 1 ? baseName : `${baseName}-${index}`
+    const branch = `hermes/${name}`
+    const worktreePath = resolveWorktreePath(root, name, directory)
+    const [branchExists, pathExists] = await Promise.all([
+      gitBranchExists(root, branch),
+      wslPathExists(worktreePath),
+    ])
+
+    if (!branchExists && !pathExists) {
+      return { name, branch, worktreePath }
+    }
+  }
+
+  throw new Error(`Could not find an available worktree name for ${baseName}.`)
 }
 
 function normalizeWorktreeName(value?: string) {
@@ -585,7 +617,26 @@ function resolveWorktreePath(root: string, name: string, directory?: string) {
     resolved = `${root}/${raw}`
   }
 
-  return path.posix.normalize(resolved.replace(/\\/g, '/'))
+  const parent = path.posix.normalize(resolved.replace(/\\/g, '/'))
+  return path.posix.join(parent, name)
+}
+
+async function gitBranchExists(root: string, branch: string) {
+  try {
+    await runWslCommand(['git', '-C', root, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function wslPathExists(wslPath: string) {
+  try {
+    await runWslCommand(['bash', '-lc', 'test -e "$1"', 'hermes-path-exists', wslPath])
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function finalizeHermesWorktree(root: string, worktreePath: string) {
