@@ -1,62 +1,45 @@
 # Hermes Desktop Agent
 
-Hermes Desktop Agent 是一个面向 WSL2 / WSLg 场景的 Electron 桌面外壳，用来把 Hermes Agent 以更接近桌面助手的方式运行起来，同时保留与 Windows 原生环境的互操作能力。
+Hermes Desktop Agent 是一个 Windows 原生 Electron 桌面助手。前端窗口运行在 Windows 中，Hermes 后端运行在 WSL2 中，并通过 ACP over stdio 通信。
 
-它把三部分能力组合到同一个桌面工作区中：
+当前主路线：
 
-- 面向编码任务的桌面聊天窗口
-- Electron 主进程到本地 `hermes chat` 的 stdio 桥接
-- WSL 与 Windows 之间的路径、资源管理器、默认应用、剪贴板互操作
+- Windows 原生 Electron / React 前端
+- `wsl.exe -d <distro> -- hermes acp` 后端
+- ACP JSON-RPC stdio 主链路
+- Windows 原生输入法、托盘、快捷键、Explorer、剪贴板
+- WSL 内 Hermes 配置、skills、工具和工作区执行环境
 
-## 项目定位
-
-这个项目不是一个普通网页，而是一个常驻桌面的 Hermes 助手壳层。
-
-核心目标：
-
-- 在 WSL2 中运行 Hermes，本体以 Electron 窗口提供交互
-- 适配悬浮窗工作流，支持置顶、最小化、托盘常驻、快捷键唤起
-- 用三栏布局把技能、聊天、工作区上下文放进同一视图
-- 保持未来扩展空间，例如真实文件树、工具调用卡片、会话管理等
+WSLg 运行 Electron 只保留为开发/回退路径，不再是首选运行方式。
 
 ## 当前能力
 
-已实现：
-
-- Electron 桌面窗口
+- Windows 原生 Electron 桌面窗口
   - 自定义标题栏
   - 置顶切换
   - 最小化
   - 托盘菜单
   - `Super+H` 全局快捷键
-- React + Vite + Tailwind 渲染层三栏布局
-  - 左侧技能面板
-  - 中间聊天面板
-  - 右侧工作区面板
-- Hermes 主进程桥接
-  - 启动本地 `hermes chat --source desktop`
-  - 接收 stdout / stderr
-  - 归一化流式事件并推送到前端
-- preload 安全桥接
-  - 使用 `contextBridge` 向渲染层暴露有限 API
-- Windows 互操作
-  - WSL 路径转 Windows 路径
-  - 在 Explorer 中定位工作区
-  - 用 Windows 默认程序打开工作区
-  - 读写 Windows 剪贴板
-- 聊天体验增强
-  - 支持流式响应显示
-  - 支持轻量 Markdown 渲染
-  - 支持行内代码与代码块展示
-  - 内置轻量代码高亮
-  - `Enter` 发送，`Shift+Enter` 换行
-
-## 当前仍未完成
-
-- 工作区文件树目前还是占位数据，不是真实文件系统树
-- 工具调用 / 工具结果还没有专门的富卡片展示
-- 当前 Markdown 为轻量自实现，暂未覆盖完整 CommonMark 语法
-- 生产模式下仍可继续补强 CSP 与安全细节
+  - Windows 中文输入法候选框正常跟随输入框
+- React + Vite + Tailwind 三栏布局
+  - 左侧技能与模型配置
+  - 中间 ACP 聊天面板
+  - 右侧工作区上下文
+- Hermes ACP 桥接
+  - Windows 主进程通过 `wsl.exe` 启动 WSL 内 `hermes acp --accept-hooks`
+  - 完成 ACP `initialize`、`session/new`、`session/prompt`
+  - 接收 `session/update` 并归一化为聊天流、思考状态和工具卡片
+  - 过滤 ACP 后端 INFO 日志，避免正常日志污染聊天区
+- Windows host 工作区能力
+  - 读取真实文件树
+  - 文件内容预览
+  - Windows path 与 WSL POSIX path 显示
+  - Explorer 定位
+  - 默认程序打开
+  - Windows 剪贴板读写
+- WSL Hermes 信息
+  - 从 WSL `~/.hermes/config.yaml` 读取 provider/model
+  - 从 WSL `~/.hermes/skills/` 扫描已安装技能
 
 ## 技术栈
 
@@ -67,165 +50,138 @@ Hermes Desktop Agent 是一个面向 WSL2 / WSLg 场景的 Electron 桌面外壳
 - Tailwind CSS v4
 - Framer Motion
 - Zustand
+- ACP over stdio
 
 ## 目录结构
 
 ```text
 hermes-desktop-agent/
-├── electron/                 # Electron 主进程、preload、Hermes 桥、Windows 互操作
+├── electron/                 # Electron 主进程、preload、ACP 桥、Windows/WSL 互操作
 ├── src/                      # React 渲染层
 │   ├── components/           # 通用组件
 │   ├── panels/               # Skills / Chat / Workspace 三个面板
 │   ├── store/                # Zustand 状态管理
 │   └── lib/                  # 小型工具函数
-├── scripts/                  # 辅助脚本，例如 dbus 启动包装
-├── changelog/                # 每日开发记录
-├── PLAN.md                   # 当前实现计划与架构说明
+├── scripts/                  # WSLg 回退启动脚本
+├── changelog/                # 开发记录
+├── PLAN.md                   # Windows native + WSL ACP 实现计划
 ├── package.json
 └── README.MD
 ```
 
-## 运行环境要求
+## 环境要求
 
-推荐环境：
+Windows 侧：
 
-- WSL2 + WSLg
+- Windows 11 或支持 WSL2 的 Windows 10+
 - Node.js 20+
 - npm 10+
-- 本机已安装 Hermes CLI，并且 `hermes` 在 `PATH` 中可执行
-- 已存在 Hermes 用户目录，通常为 `~/.hermes/`
+- WSL2 已安装
+- Windows PowerShell 中可执行 `wsl.exe`
 
-若要启用 Windows 互操作，环境中还需要可用：
+WSL 侧：
 
-- `wslpath`
-- `powershell.exe`
-- WSL 对 Windows 剪贴板的访问能力
+- 已安装 Hermes CLI
+- 在 login shell 中可执行 `hermes`
+- `hermes acp --help` 可正常输出
+- 已存在 `~/.hermes/` 配置目录
+
+当前默认 WSL 发行版为 `Ubuntu-22.04`。可以通过环境变量覆盖：
+
+```powershell
+$env:HERMES_WSL_DISTRO = "Ubuntu-22.04"
+```
 
 ## 安装依赖
 
-如果当前目录尚未安装依赖：
+在 Windows PowerShell 中进入项目根目录：
 
-```bash
+```powershell
+cd E:\Hermes-Desktop-Agent
 npm install
 ```
 
-如果 Electron 的 postinstall 在你的环境里受限，也可以使用之前开发日志中的回避方式：
+注意：Windows 原生 Electron 需要 Windows 版 `node_modules`。如果之前只在 WSL 内安装过依赖，需要在 PowerShell 中重新执行 `npm install`。
 
-```bash
-npm install --ignore-scripts
-```
+## 运行
 
-## 开发模式
+开发模式：
 
-启动开发环境：
-
-```bash
+```powershell
 npm run dev
 ```
 
-该命令会同时启动：
+生产预览：
 
-- Vite 渲染层开发服务器
-- Electron 代码的 TypeScript watch 编译
-- 指向本地 Vite 服务的 Electron 应用
-
-应用运行后可用的桌面交互：
-
-- `Super+H`：显示 / 隐藏窗口
-- 托盘菜单：显示隐藏、置顶切换、退出
-- 标题栏：置顶、最小化、关闭应用
-
-## 构建与预览
-
-构建渲染层与 Electron 代码：
-
-```bash
+```powershell
 npm run build
+npm run electron:windows
 ```
 
-预览构建后的桌面应用：
+兼容旧命令：
 
-```bash
+```powershell
 npm run electron:preview
 ```
 
-## 基本使用方法
+该命令现在等价于 `npm run electron:windows`。
 
-### 1. 启动应用
+## WSL 后端自检
 
-开发时运行：
-
-```bash
-npm run dev
+```powershell
+wsl.exe --status
+wsl.exe -l -q
+wsl.exe -d Ubuntu-22.04 -- bash -lc "command -v hermes && hermes --version"
+wsl.exe -d Ubuntu-22.04 -- bash -lc "hermes acp --help"
 ```
 
-构建完成后运行：
+路径转换自检：
 
-```bash
-npm run electron:preview
+```powershell
+wsl.exe -d Ubuntu-22.04 -- wslpath -u "E:\Hermes-Desktop-Agent"
+wsl.exe -d Ubuntu-22.04 -- wslpath -w "/mnt/e/Hermes-Desktop-Agent"
 ```
 
-### 2. 在聊天框中向 Hermes 发起任务
+## 基本使用
 
-在输入框中输入内容后：
+1. 在 Windows PowerShell 中运行 `npm run dev` 或 `npm run electron:windows`。
+2. Electron 窗口打开后，在中间输入框描述任务。
+3. 前端会通过 ACP 把消息发送给 WSL 内 Hermes。
+4. Hermes 输出会以流式方式显示在聊天面板。
+5. 右侧工作区面板可以查看 Windows 路径、WSL 路径、文件树、文件预览和剪贴板内容。
 
-- 按 `Enter` 直接发送
-- 按 `Shift+Enter` 插入换行
+输入规则：
 
-Hermes 的输出会以流式方式逐步显示在中间聊天面板。
-
-### 3. 阅读聊天结果
-
-当前消息气泡支持以下常见内容：
-
-- 标题
-- 无序 / 有序列表
-- 引用块
-- 链接
-- 行内代码
-- fenced code block 代码块
-
-### 4. 使用工作区互操作能力
-
-右侧工作区面板目前可以：
-
-- 查看当前 WSL 工作目录
-- 查看映射后的 Windows 路径
-- 在 Windows Explorer 中定位当前工作区
-- 用 Windows 默认程序打开当前工作区
-- 读取 Windows 剪贴板
-- 把 Windows 路径复制到剪贴板
-
-### 5. 查看当前 Hermes 配置
-
-左侧配置区域会从 `~/.hermes/config.yaml` 读取当前 Hermes 的 `provider` 和 `model`，并扫描 `~/.hermes/skills/` 下已安装的技能目录。
-
-目前这里只做真实配置展示，还没有接入交互式切换模型。
-
-## 中文快速上手
-
-最短路径如下：
-
-1. 确保 `hermes` 命令可在终端中直接运行
-2. 在项目根目录执行 `npm run dev`
-3. 等 Electron 窗口打开后，在中间输入框直接描述任务
-4. 用右侧工作区面板检查当前路径、Windows 映射路径和剪贴板内容
-5. 关闭窗口后可通过托盘或 `Super+H` 再次召回
+- `Enter` 发送
+- `Shift+Enter` 换行
 
 ## 常用命令
 
-```bash
+```powershell
 npm run dev
 npm run build
-npm run electron:preview
+npm run electron:windows
+npm run dev:wslg
+npm run electron:wslg
 ```
 
-## 已知说明
+## WSLg 回退路径
 
-- Electron 进程需要能直接调用到 `hermes`
-- 在受限沙箱中，Vite 本地端口监听可能需要提升权限
-- 当前 Markdown 渲染是轻量自定义实现，优先保证集成简单与构建稳定
-- 后续如果接入真实文件树、工具卡片与会话管理，README 也需要同步更新
+如果需要在 WSLg 中调试旧路径，可以显式运行：
+
+```bash
+npm run dev:wslg
+npm run electron:wslg
+```
+
+WSLg 路径依赖 Linux Electron 图形库和 DBus 环境，主要用于排障，不是当前主运行方式。
+
+## 已知后续工作
+
+- 完善 ACP terminal/fs 代理请求的 UI 审批与执行策略
+- 增加手动选择 WSL distro 和 workspace root 的入口
+- 将 README 中的运行说明继续随 ACP 能力演进同步更新
+- 清理本地 IDE 元数据，避免提交个人工作区文件
 
 ## 开发记录
 

@@ -1,7 +1,7 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import path from 'node:path'
+import { windowsPathToWslPath } from './windows-interop.js'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
@@ -12,6 +12,13 @@ export type HermesBridgeEvent =
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
   | { type: 'exit'; payload: { code: number | null } }
+
+export type HermesSessionInfo = {
+  sessionId: string
+  cwd: string
+  title?: string
+  updatedAt?: string
+}
 
 type JsonRpcMessage = {
   jsonrpc?: '2.0'
@@ -39,14 +46,32 @@ export class HermesBridge extends EventEmitter {
   private startPromise: Promise<void> | null = null
   private activeMessageIds = new Set<string>()
   private promptInFlight = false
+  private workspacePath = process.cwd()
 
-  start() {
-    if (this.startPromise) {
-      return this.startPromise
+  getWorkspacePath() {
+    return this.workspacePath
+  }
+
+  getSessionId() {
+    return this.sessionId
+  }
+
+  async switchWorkspace(workspacePath: string) {
+    if (workspacePath === this.workspacePath) {
+      return
     }
 
-    this.startPromise = this.startBackend()
-    return this.startPromise
+    this.workspacePath = workspacePath
+    this.stop()
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'workspace', detail: `Workspace switched to ${workspacePath}` },
+    })
+  }
+
+  async start() {
+    await this.ensureBackend()
+    await this.ensureSession()
   }
 
   async sendMessage(text: string) {
@@ -58,13 +83,13 @@ export class HermesBridge extends EventEmitter {
     await this.start()
 
     if (!this.sessionId) {
-      throw new Error('Hermes ACP 会话尚未就绪。')
+      throw new Error('Hermes ACP session is not ready.')
     }
 
     this.promptInFlight = true
     this.emitEvent({
       type: 'status',
-      payload: { stage: 'queued', detail: '消息已通过 ACP 转发给 WSL Hermes。' },
+      payload: { stage: 'queued', detail: 'Message queued through ACP.' },
     })
 
     try {
@@ -84,10 +109,60 @@ export class HermesBridge extends EventEmitter {
     }
   }
 
+  async listSessions(): Promise<HermesSessionInfo[]> {
+    await this.ensureBackend()
+
+    const sessions: HermesSessionInfo[] = []
+    let cursor: string | null = null
+
+    do {
+      const result = await this.sendRequest('session/list', cursor ? { cursor } : {})
+      const page = this.readSessionPage(result)
+      sessions.push(...page.sessions)
+      cursor = page.nextCursor
+    } while (cursor)
+
+    return sessions
+  }
+
+  async loadSession(sessionId: string, workspacePath: string) {
+    await this.switchWorkspace(workspacePath)
+    await this.ensureBackend()
+
+    const cwd = windowsPathToWslPath(this.workspacePath)
+    const result = await this.sendRequest('session/load', {
+      cwd,
+      sessionId,
+      mcpServers: [],
+    })
+
+    if (result === null || result === undefined) {
+      throw new Error(`Hermes could not load session ${sessionId}.`)
+    }
+
+    this.sessionId = sessionId
+    this.activeMessageIds.clear()
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'ready', detail: `Loaded Hermes ACP session ${sessionId}` },
+    })
+  }
+
+  async startNewSession(workspacePath?: string) {
+    if (workspacePath) {
+      await this.switchWorkspace(workspacePath)
+    }
+
+    await this.ensureBackend()
+    this.sessionId = null
+    this.activeMessageIds.clear()
+    await this.ensureSession()
+  }
+
   stop() {
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeout)
-      pending.reject(new Error('Hermes ACP 后端已停止。'))
+      pending.reject(new Error('Hermes ACP backend stopped.'))
       this.pending.delete(id)
     }
 
@@ -99,13 +174,44 @@ export class HermesBridge extends EventEmitter {
     this.activeMessageIds.clear()
   }
 
+  private async ensureBackend() {
+    if (this.startPromise) {
+      return this.startPromise
+    }
+
+    this.startPromise = this.startBackend()
+    return this.startPromise
+  }
+
+  private async ensureSession() {
+    if (this.sessionId) {
+      return
+    }
+
+    const cwd = windowsPathToWslPath(this.workspacePath)
+    const session = await this.sendRequest('session/new', {
+      cwd,
+      mcpServers: [],
+    })
+
+    this.sessionId = this.readString(session, 'sessionId') ?? this.readString(session, 'session_id')
+
+    if (!this.sessionId) {
+      throw new Error('Hermes ACP did not return sessionId.')
+    }
+
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'ready', detail: `Hermes ACP session ready: ${this.sessionId}` },
+    })
+  }
+
   private async startBackend() {
     if (this.process) {
       return
     }
 
-    const workspace = process.cwd()
-    const wslWorkspace = windowsPathToWslPath(workspace)
+    const wslWorkspace = windowsPathToWslPath(this.workspacePath)
 
     this.process = spawn('wsl.exe', [
       '-d',
@@ -126,7 +232,7 @@ export class HermesBridge extends EventEmitter {
       type: 'status',
       payload: {
         stage: 'boot',
-        detail: `正在通过 ${DEFAULT_WSL_DISTRO} 启动 Hermes ACP 后端。`,
+        detail: `Starting Hermes ACP in ${DEFAULT_WSL_DISTRO}.`,
       },
     })
 
@@ -152,7 +258,7 @@ export class HermesBridge extends EventEmitter {
 
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timeout)
-        pending.reject(new Error(`Hermes ACP 后端已退出${code === null ? '' : `，退出码 ${code}`}。`))
+        pending.reject(new Error(`Hermes ACP backend exited${code === null ? '' : ` with code ${code}`}.`))
         this.pending.delete(id)
       }
     })
@@ -184,30 +290,14 @@ export class HermesBridge extends EventEmitter {
       type: 'status',
       payload: {
         stage: 'initialized',
-        detail: model ? `Hermes ACP 已初始化，当前模型 ${model}。` : 'Hermes ACP 已初始化。',
+        detail: model ? `Hermes ACP initialized with ${model}.` : 'Hermes ACP initialized.',
       },
-    })
-
-    const session = await this.sendRequest('session/new', {
-      cwd: wslWorkspace,
-      mcpServers: [],
-    })
-
-    this.sessionId = this.readString(session, 'sessionId') ?? this.readString(session, 'session_id')
-
-    if (!this.sessionId) {
-      throw new Error('Hermes ACP 未返回 sessionId。')
-    }
-
-    this.emitEvent({
-      type: 'status',
-      payload: { stage: 'ready', detail: `Hermes ACP 会话已就绪：${this.sessionId}` },
     })
   }
 
   private sendRequest(method: string, params: unknown, timeoutMs = 30_000) {
     if (!this.process) {
-      return Promise.reject(new Error('Hermes ACP 后端尚未启动。'))
+      return Promise.reject(new Error('Hermes ACP backend has not started.'))
     }
 
     const id = this.nextRequestId++
@@ -216,7 +306,7 @@ export class HermesBridge extends EventEmitter {
     return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id)
-        reject(new Error(`ACP 请求超时：${method}`))
+        reject(new Error(`ACP request timed out: ${method}`))
       }, timeoutMs)
 
       this.pending.set(id, { resolve, reject, timeout })
@@ -343,7 +433,7 @@ export class HermesBridge extends EventEmitter {
 
       if (method === 'fs/read_text_file' || method === 'fs/write_text_file') {
         if (message.id !== undefined) {
-          this.sendError(message.id, 'Hermes Desktop Agent 暂未开放 ACP 文件系统代理。')
+          this.sendError(message.id, 'Hermes Desktop Agent does not expose ACP filesystem proxying yet.')
         }
         return
       }
@@ -435,6 +525,37 @@ export class HermesBridge extends EventEmitter {
     this.emitEvent({ type: 'raw', payload })
   }
 
+  private readSessionPage(payload: unknown) {
+    const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+    const rawSessions = Array.isArray(record.sessions) ? record.sessions : []
+    const sessions = rawSessions
+      .map((item): HermesSessionInfo | null => {
+        if (!item || typeof item !== 'object') {
+          return null
+        }
+
+        const row = item as Record<string, unknown>
+        const sessionId = this.readString(row, 'sessionId') ?? this.readString(row, 'session_id')
+        const cwd = this.readString(row, 'cwd')
+        if (!sessionId || !cwd) {
+          return null
+        }
+
+        return {
+          sessionId,
+          cwd,
+          title: this.readString(row, 'title') ?? undefined,
+          updatedAt: this.readString(row, 'updatedAt') ?? this.readString(row, 'updated_at') ?? undefined,
+        }
+      })
+      .filter((item): item is HermesSessionInfo => Boolean(item))
+
+    return {
+      sessions,
+      nextCursor: this.readString(record, 'nextCursor') ?? this.readString(record, 'next_cursor'),
+    }
+  }
+
   private extractCurrentModel(payload: unknown) {
     if (!payload || typeof payload !== 'object') {
       return null
@@ -462,18 +583,6 @@ export class HermesBridge extends EventEmitter {
   private emitEvent(event: HermesBridgeEvent) {
     this.emit('event', event)
   }
-}
-
-function windowsPathToWslPath(workspace: string) {
-  const resolved = path.resolve(workspace)
-  const driveMatch = resolved.match(/^([A-Za-z]):\\(.*)$/)
-  if (!driveMatch) {
-    return resolved.replace(/\\/g, '/')
-  }
-
-  const drive = driveMatch[1].toLowerCase()
-  const rest = driveMatch[2].replace(/\\/g, '/')
-  return `/mnt/${drive}/${rest}`
 }
 
 function extractAcpText(content: unknown): string | null {

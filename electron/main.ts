@@ -1,5 +1,6 @@
-import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage } from 'electron'
-import { readdir, readFile } from 'node:fs/promises'
+import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, nativeImage } from 'electron'
+import type { OpenDialogOptions } from 'electron'
+import { access, readdir, readFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +11,10 @@ import {
   openPathWithDefaultApp,
   readWindowsClipboard,
   revealInExplorer,
+  runWslCommand,
+  windowsPathToWslPath,
+  wslPathToUncPath,
+  wslPathToWindowsPath,
   writeWindowsClipboard,
 } from './windows-interop.js'
 
@@ -21,6 +26,7 @@ let tray: Tray | null = null
 const hermesBridge = new HermesBridge()
 let bridgeBound = false
 let isQuitting = false
+let workspaceRoot = process.cwd()
 
 type HermesConfigSnapshot = {
   provider: string
@@ -41,6 +47,20 @@ type WorkspaceFileNode = {
   path: string
   type: 'file' | 'directory'
   children?: WorkspaceFileNode[]
+}
+
+type HermesWorktreeInfo = {
+  path: string
+  branch: string
+  head: string
+  detached: boolean
+  current: boolean
+  name: string
+}
+
+type CreateWorktreeOptions = {
+  name?: string
+  directory?: string
 }
 
 function createTray() {
@@ -212,22 +232,77 @@ ipcMain.handle('hermes:send-message', async (_event, message: string) => {
   return { ok: true }
 })
 
+ipcMain.handle('hermes:list-sessions', async () => {
+  return hermesBridge.listSessions()
+})
+
+ipcMain.handle('hermes:load-session', async (_event, sessionId: string, cwd: string) => {
+  const nextWorkspaceRoot = workspaceHostPathFromHermesCwd(cwd)
+  await assertWorkspaceExists(nextWorkspaceRoot)
+  workspaceRoot = nextWorkspaceRoot
+  await hermesBridge.loadSession(sessionId, workspaceRoot)
+  return createWorkspaceSnapshot()
+})
+
+ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
+  const worktree = await createHermesWorktree(workspaceRoot, options)
+  workspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)
+  await hermesBridge.startNewSession(workspaceRoot)
+  return {
+    worktree,
+    snapshot: await createWorkspaceSnapshot(),
+  }
+})
+
+ipcMain.handle('workspace:list-worktrees', async () => {
+  return listHermesWorktrees(workspaceRoot)
+})
+
+ipcMain.handle('workspace:switch-worktree', async (_event, worktreePath: string) => {
+  const nextWorkspaceRoot = workspaceHostPathFromHermesCwd(worktreePath)
+  await assertWorkspaceExists(nextWorkspaceRoot)
+  workspaceRoot = nextWorkspaceRoot
+  await hermesBridge.startNewSession(workspaceRoot)
+  return createWorkspaceSnapshot()
+})
+
+ipcMain.handle('workspace:select-worktree-directory', async () => {
+  const options: OpenDialogOptions = {
+    title: 'Select worktree directory',
+    defaultPath: workspaceRoot,
+    properties: ['openDirectory', 'createDirectory'],
+  }
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options)
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true }
+  }
+
+  return {
+    canceled: false,
+    path: result.filePaths[0],
+  }
+})
+
 ipcMain.handle('workspace:get-snapshot', async () => {
-  const cwd = process.cwd()
+  const cwd = workspaceRoot
   const windows = await getWindowsInteropSnapshot(cwd)
 
   return {
     cwd,
-    session: '本地桌面会话',
+    session: hermesBridge.getSessionId() ?? 'Local desktop session',
     files: await readWorkspaceTree(cwd),
     tasks: [
       { id: 'task-layout', title: '完成三栏布局骨架', done: true },
-      { id: 'task-bridge', title: '接通 Hermes stdio 桥接', done: true },
+      { id: 'task-bridge', title: '接通 WSL Hermes ACP 桥接', done: true },
       { id: 'task-workspace', title: '接入真实工作区文件树', done: true },
       { id: 'task-preview', title: '支持文件内容预览', done: true },
       { id: 'task-tools', title: '支持工具调用卡片', done: true },
-      { id: 'task-windows', title: '启用 WSL 到 Windows 互操作', done: windows.available },
-      { id: 'task-clipboard', title: '打通 Windows 剪贴板能力', done: windows.available },
+      { id: 'task-windows', title: '启用 Windows 原生互操作', done: windows.available },
+      { id: 'task-acp', title: '通过 wsl.exe 启动 Hermes ACP 后端', done: true },
+      { id: 'task-clipboard', title: '打通 Windows 剪贴板能力', done: true },
     ],
     windows: {
       ...windows,
@@ -237,11 +312,11 @@ ipcMain.handle('workspace:get-snapshot', async () => {
 })
 
 ipcMain.handle('workspace:read-file', async (_event, filePath: string) => {
-  const cwd = process.cwd()
+  const cwd = workspaceRoot
   const normalized = path.normalize(filePath)
   const absolutePath = path.resolve(cwd, normalized)
 
-  if (!absolutePath.startsWith(cwd)) {
+  if (!isPathInside(cwd, absolutePath)) {
     return { ok: false, error: '禁止读取工作区之外的文件。' }
   }
 
@@ -272,7 +347,7 @@ ipcMain.handle('hermes:get-skills', async () => {
 })
 
 ipcMain.handle('windows:reveal-workspace', async () => {
-  const cwd = process.cwd()
+  const cwd = workspaceRoot
 
   try {
     const windowsPath = await revealInExplorer(cwd)
@@ -286,7 +361,7 @@ ipcMain.handle('windows:reveal-workspace', async () => {
 })
 
 ipcMain.handle('windows:open-workspace', async () => {
-  const cwd = process.cwd()
+  const cwd = workspaceRoot
 
   try {
     const windowsPath = await openPathWithDefaultApp(cwd)
@@ -420,6 +495,194 @@ function getTrayIconDataUrl() {
   return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAwUlEQVR4AWOgH2DgPxQMDP9nYGBg+A8E8R8GhoZ/GP5jYGA4gKkGJYbi/6OhoWE4gWQxMDBg+I8RkYHhP0YGBsY/gKQDmRgeIPmPkcHhP8bAwPAfSAbCwPD/MPzHwMDA8B8jAwPDfwyMDAwM/0EwmIGBkf8wMDAw/AdkYGj4j5GBgWE4w2mB4T9GRgaG/xgYGBj+AzIYGBj+Y2BgYPgPZGB4g+Q/RkYGhv8YGhgY/gMyMDB8x8DAwPAfIwMDw38MDAwMDP8B0m0gGQbqYVMAAAAASUVORK5CYII='
 }
 
+async function createWorkspaceSnapshot() {
+  const windows = await getWindowsInteropSnapshot(workspaceRoot)
+
+  return {
+    cwd: workspaceRoot,
+    session: hermesBridge.getSessionId() ?? 'Local desktop session',
+    files: await readWorkspaceTree(workspaceRoot),
+    tasks: [
+      { id: 'task-layout', title: 'Desktop three-panel shell', done: true },
+      { id: 'task-bridge', title: 'WSL Hermes ACP bridge', done: true },
+      { id: 'task-workspace', title: 'Workspace file tree and preview', done: true },
+      { id: 'task-windows', title: 'Windows native interop', done: windows.available },
+      { id: 'task-acp-session', title: 'ACP historical session loading', done: true },
+      { id: 'task-worktree', title: 'Git worktree workspace switching', done: true },
+    ],
+    windows: {
+      ...windows,
+      clipboardPreview: '',
+    },
+  }
+}
+
+function workspaceHostPathFromHermesCwd(cwd: string) {
+  const windowsPath = wslPathToWindowsPath(cwd)
+  if (windowsPath) {
+    return windowsPath
+  }
+
+  return wslPathToUncPath(cwd) ?? cwd
+}
+
+async function assertWorkspaceExists(hostPath: string) {
+  await access(hostPath)
+}
+
+async function createHermesWorktree(hostPath: string, options: CreateWorktreeOptions = {}) {
+  const wslRoot = windowsPathToWslPath(hostPath)
+  const root = await runWslCommand(['git', '-C', wslRoot, 'rev-parse', '--show-toplevel'])
+  const short = await runWslCommand(['git', '-C', root, 'rev-parse', '--short', 'HEAD'])
+  const stamp = await runWslCommand(['date', '+%Y%m%d-%H%M%S'])
+  const name = normalizeWorktreeName(options.name) ?? `hermes-${stamp}-${short}`
+  const branch = `hermes/${name}`
+  const worktreePath = resolveWorktreePath(root, name, options.directory)
+
+  await runWslCommand(['mkdir', '-p', path.posix.dirname(worktreePath)])
+  await runWslCommand(['git', '-C', root, 'worktree', 'add', worktreePath, '-b', branch, 'HEAD'])
+  await finalizeHermesWorktree(root, worktreePath)
+
+  return {
+    path: worktreePath,
+    branch,
+    name,
+    root,
+  }
+}
+
+function normalizeWorktreeName(value?: string) {
+  const raw = value?.trim()
+  if (!raw) {
+    return null
+  }
+
+  const normalized = raw
+    .replace(/[\\/\s]+/g, '-')
+    .replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+
+  if (!normalized) {
+    throw new Error('Worktree name must contain letters, numbers, dots, underscores, or hyphens.')
+  }
+
+  return normalized
+}
+
+function resolveWorktreePath(root: string, name: string, directory?: string) {
+  const raw = directory?.trim()
+  if (!raw) {
+    return `${root}/.worktrees/${name}`
+  }
+
+  let resolved = ''
+  if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\wsl')) {
+    resolved = windowsPathToWslPath(raw)
+  } else if (raw.startsWith('/')) {
+    resolved = raw
+  } else {
+    resolved = `${root}/${raw}`
+  }
+
+  return path.posix.normalize(resolved.replace(/\\/g, '/'))
+}
+
+async function finalizeHermesWorktree(root: string, worktreePath: string) {
+  const script = [
+    'set -euo pipefail',
+    'root="$1"',
+    'worktree_path="$2"',
+    'gitignore="$root/.gitignore"',
+    'touch "$gitignore"',
+    'grep -qxF ".worktrees/" "$gitignore" || printf "\\n.worktrees/\\n" >> "$gitignore"',
+    'if [ -f "$root/.worktreeinclude" ]; then',
+    '  while IFS= read -r include || [ -n "$include" ]; do',
+    '    include="${include%%#*}"',
+    '    include="${include#"${include%%[![:space:]]*}"}"',
+    '    include="${include%"${include##*[![:space:]]}"}"',
+    '    [ -z "$include" ] && continue',
+    '    [ -e "$root/$include" ] || continue',
+    '    mkdir -p "$worktree_path/$(dirname "$include")"',
+    '    cp -a "$root/$include" "$worktree_path/$include"',
+    '  done < "$root/.worktreeinclude"',
+    'fi',
+  ].join('\n')
+
+  await runWslCommand(['bash', '-lc', script, 'hermes-worktree-finalize', root, worktreePath])
+}
+
+async function listHermesWorktrees(hostPath: string): Promise<HermesWorktreeInfo[]> {
+  const wslRoot = windowsPathToWslPath(hostPath)
+  const output = await runWslCommand([
+    'git',
+    '-C',
+    wslRoot,
+    'worktree',
+    'list',
+    '--porcelain',
+  ])
+  const currentWslPath = windowsPathToWslPath(workspaceRoot)
+  const worktrees: HermesWorktreeInfo[] = []
+  let current: Partial<HermesWorktreeInfo> | null = null
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) {
+      if (current?.path) {
+        worktrees.push(normalizeWorktreeInfo(current, currentWslPath))
+      }
+      current = null
+      continue
+    }
+
+    const [key, ...valueParts] = line.split(' ')
+    const value = valueParts.join(' ')
+
+    if (key === 'worktree') {
+      if (current?.path) {
+        worktrees.push(normalizeWorktreeInfo(current, currentWslPath))
+      }
+      current = { path: value }
+      continue
+    }
+
+    if (!current) {
+      continue
+    }
+
+    if (key === 'HEAD') {
+      current.head = value
+    } else if (key === 'branch') {
+      current.branch = value.replace(/^refs\/heads\//, '')
+    } else if (key === 'detached') {
+      current.detached = true
+    }
+  }
+
+  if (current?.path) {
+    worktrees.push(normalizeWorktreeInfo(current, currentWslPath))
+  }
+
+  return worktrees
+}
+
+function normalizeWorktreeInfo(info: Partial<HermesWorktreeInfo>, currentWslPath: string): HermesWorktreeInfo {
+  const worktreePath = info.path ?? ''
+  return {
+    path: worktreePath,
+    branch: info.detached ? 'detached' : info.branch ?? '',
+    head: info.head ?? '',
+    detached: Boolean(info.detached),
+    current: normalizeWslPath(worktreePath) === normalizeWslPath(currentWslPath),
+    name: path.posix.basename(worktreePath),
+  }
+}
+
+function normalizeWslPath(value: string) {
+  return value.replace(/\/+$/, '')
+}
+
 const WORKSPACE_TREE_MAX_DEPTH = 4
 const WORKSPACE_TREE_MAX_ENTRIES = 120
 const IGNORED_WORKSPACE_NAMES = new Set(['.git', 'node_modules', 'dist', 'dist-electron'])
@@ -506,10 +769,10 @@ function inferLanguageFromPath(filePath: string) {
 }
 
 async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
-  const configPath = path.join(app.getPath('home'), '.hermes', 'config.yaml')
+  const configPath = '~/.hermes/config.yaml'
 
   try {
-    const content = await readFile(configPath, 'utf8')
+    const content = await runWslCommand(['bash', '-lc', 'cat ~/.hermes/config.yaml'])
     const modelBlock = content.match(/(^|\n)model:\n([\s\S]*?)(\n[A-Za-z_][\w-]*:|\n?$)/)
     const block = modelBlock?.[2] ?? ''
     const provider = block.match(/^\s{2}provider:\s*(.+)$/m)?.[1]?.trim() ?? 'unknown'
@@ -530,31 +793,34 @@ async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
 }
 
 async function readHermesSkillsSnapshot(): Promise<HermesSkillSnapshot[]> {
-  const skillsRoot = path.join(app.getPath('home'), '.hermes', 'skills')
-
   try {
-    const categories = await readdir(skillsRoot, { withFileTypes: true })
-    const skills = await Promise.all(
-      categories
-        .filter((entry) => entry.isDirectory())
-        .map(async (categoryEntry) => {
-          const categoryPath = path.join(skillsRoot, categoryEntry.name)
-          const children = await readdir(categoryPath, { withFileTypes: true })
+    const content = await runWslCommand([
+      'bash',
+      '-lc',
+      'find ~/.hermes/skills -mindepth 2 -maxdepth 2 -type d -printf "%P\\n" 2>/dev/null',
+    ])
 
-          return children
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => ({
-              id: `${categoryEntry.name}/${entry.name}`,
-              name: entry.name,
-              category: categoryEntry.name,
-              description: `来自 ${categoryEntry.name} 分类的已安装 Hermes 技能。`,
-              enabled: true,
-            }))
-        }),
-    )
-
-    return skills.flat().sort((left, right) => left.name.localeCompare(right.name))
+    return content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((id) => {
+        const [category, name] = id.split('/')
+        return {
+          id,
+          name: name ?? id,
+          category: category ?? 'skills',
+          description: `来自 WSL ~/.hermes/skills/${category ?? ''} 分类的已安装 Hermes 技能。`,
+          enabled: true,
+        }
+      })
+      .sort((left, right) => left.name.localeCompare(right.name))
   } catch {
     return []
   }
+}
+
+function isPathInside(root: string, target: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(target))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }

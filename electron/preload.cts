@@ -12,6 +12,13 @@ const api = {
 
     return () => ipcRenderer.removeListener('hermes:event', wrapped)
   },
+  listHermesSessions: () => ipcRenderer.invoke('hermes:list-sessions'),
+  loadHermesSession: (sessionId: string, cwd: string) => ipcRenderer.invoke('hermes:load-session', sessionId, cwd),
+  createHermesWorktree: (options?: { name?: string; directory?: string }) =>
+    ipcRenderer.invoke('workspace:create-worktree', options),
+  listHermesWorktrees: () => ipcRenderer.invoke('workspace:list-worktrees'),
+  switchHermesWorktree: (worktreePath: string) => ipcRenderer.invoke('workspace:switch-worktree', worktreePath),
+  selectWorktreeDirectory: () => ipcRenderer.invoke('workspace:select-worktree-directory'),
   getWorkspaceSnapshot: () => ipcRenderer.invoke('workspace:get-snapshot'),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
   getHermesSkills: () => ipcRenderer.invoke('hermes:get-skills'),

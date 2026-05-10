@@ -22,8 +22,12 @@ export interface WorkspaceFilePreview {
 
 export interface WindowsInteropState {
   available: boolean
+  hostPlatform?: string
+  distro?: string
+  workspaceMode?: 'windows-workspace' | 'wsl-workspace'
   wslPath: string
   windowsPath: string | null
+  uncPath?: string | null
   clipboardPreview: string
 }
 
@@ -66,8 +70,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   tasks: [],
   windows: {
     available: false,
+    hostPlatform: 'win32',
+    distro: 'Ubuntu-22.04',
+    workspaceMode: 'windows-workspace',
     wslPath: '/home/rison/hermes-desktop-agent',
     windowsPath: null,
+    uncPath: null,
     clipboardPreview: '',
   },
   setSnapshot: (snapshot) =>
@@ -80,7 +88,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
         ...snapshot.windows,
         clipboardPreview: snapshot.windows.clipboardPreview ?? '',
       },
-      expandedPaths: state.expandedPaths.length ? state.expandedPaths : ['src', 'electron'],
+      expandedPaths: state.cwd === snapshot.cwd && state.expandedPaths.length ? state.expandedPaths : ['src', 'electron'],
+      selectedFilePath: state.cwd === snapshot.cwd ? state.selectedFilePath : null,
+      preview: state.cwd === snapshot.cwd ? state.preview : null,
     })),
   toggleExpandedPath: (path) =>
     set((state) => ({
