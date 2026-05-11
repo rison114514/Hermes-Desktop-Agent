@@ -70,6 +70,12 @@ declare global {
         enabled: boolean
       }>>
       getWorkspaceSnapshot: () => Promise<DesktopWorkspaceSnapshot>
+      readWorkspaceDirectory: (directoryPath: string) => Promise<{
+        ok: boolean
+        path?: string
+        files?: DesktopWorkspaceFileNode[]
+        error?: string
+      }>
       readWorkspaceFile: (filePath: string) => Promise<{
         ok: boolean
         path?: string

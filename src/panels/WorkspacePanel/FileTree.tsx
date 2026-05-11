@@ -1,4 +1,5 @@
-import { ChevronRight, FileCode2, FolderTree } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ChevronRight, FileCode2, FolderTree, LoaderCircle } from 'lucide-react'
 import type { WorkspaceFileNode } from '@/store/workspace'
 import { useWorkspaceStore } from '@/store/workspace'
 import { cn } from '@/lib/utils'
@@ -7,12 +8,39 @@ function TreeNode({ node, depth = 0 }: { node: WorkspaceFileNode; depth?: number
   const expandedPaths = useWorkspaceStore((state) => state.expandedPaths)
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
   const toggleExpandedPath = useWorkspaceStore((state) => state.toggleExpandedPath)
+  const setDirectoryChildren = useWorkspaceStore((state) => state.setDirectoryChildren)
   const setSelectedFilePath = useWorkspaceStore((state) => state.setSelectedFilePath)
+  const [loading, setLoading] = useState(false)
   const isDirectory = node.type === 'directory'
   const isExpanded = expandedPaths.includes(node.path)
 
-  const handleClick = () => {
+  const loadDirectory = async () => {
+    if (!window.hermesDesktop || !isDirectory || node.children) {
+      return
+    }
+
+    setLoading(true)
+    try {
+      const result = await window.hermesDesktop.readWorkspaceDirectory(node.path)
+      if (result.ok && result.files) {
+        setDirectoryChildren(node.path, result.files)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (isDirectory && isExpanded && !node.children) {
+      void loadDirectory()
+    }
+  }, [isDirectory, isExpanded, node.children, node.path])
+
+  const handleClick = async () => {
     if (isDirectory) {
+      if (!isExpanded && !node.children) {
+        await loadDirectory()
+      }
       toggleExpandedPath(node.path)
       return
     }
@@ -36,7 +64,11 @@ function TreeNode({ node, depth = 0 }: { node: WorkspaceFileNode; depth?: number
       >
         {isDirectory ? (
           <>
-            <ChevronRight className={cn('h-3.5 w-3.5 text-slate-500 transition', isExpanded && 'rotate-90')} />
+            {loading ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin text-cyan-200" />
+            ) : (
+              <ChevronRight className={cn('h-3.5 w-3.5 text-slate-500 transition', isExpanded && 'rotate-90')} />
+            )}
             <FolderTree className="h-4 w-4 text-cyan-200" />
           </>
         ) : (
@@ -52,6 +84,14 @@ function TreeNode({ node, depth = 0 }: { node: WorkspaceFileNode; depth?: number
           {node.children.map((child) => (
             <TreeNode key={child.path} node={child} depth={depth + 1} />
           ))}
+        </div>
+      ) : null}
+      {isDirectory && isExpanded && node.children && node.children.length === 0 ? (
+        <div
+          className="mt-2 rounded-2xl border border-dashed border-white/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-500"
+          style={{ marginLeft: `${12 + (depth + 1) * 14}px` }}
+        >
+          Empty
         </div>
       ) : null}
     </div>

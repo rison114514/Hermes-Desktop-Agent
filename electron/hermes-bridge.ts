@@ -1,7 +1,8 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { windowsPathToWslPath } from './windows-interop.js'
+import { normalizeMaybeText } from './text-normalization.js'
+import { createUtf8ProcessEnv, windowsPathToWslPath } from './wsl-paths.js'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
@@ -9,6 +10,7 @@ export type HermesBridgeEvent =
   | { type: 'assistant:delta'; payload: { id?: string; delta: string } }
   | { type: 'assistant:done'; payload: { id?: string; reason?: string; text?: string } }
   | { type: 'tool'; payload: { id?: string; name: string; args?: string; result?: string; status: 'running' | 'completed' } }
+  | { type: 'commands'; payload: HermesCommandInfo[] }
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
   | { type: 'exit'; payload: { code: number | null } }
@@ -19,6 +21,18 @@ export type HermesSessionInfo = {
   title?: string
   updatedAt?: string
 }
+
+export type HermesCommandInfo = {
+  id: string
+  name: string
+  description: string
+}
+
+export type HermesPermissionOutcome =
+  | { outcome: 'selected'; optionId: string }
+  | { outcome: 'cancelled' }
+
+export type HermesPermissionHandler = (payload: unknown) => Promise<HermesPermissionOutcome> | HermesPermissionOutcome
 
 type JsonRpcMessage = {
   jsonrpc?: '2.0'
@@ -47,9 +61,14 @@ export class HermesBridge extends EventEmitter {
   private activeMessageIds = new Set<string>()
   private promptInFlight = false
   private workspacePath = process.cwd()
+  private permissionHandler: HermesPermissionHandler | null = null
 
   getWorkspacePath() {
     return this.workspacePath
+  }
+
+  setPermissionHandler(handler: HermesPermissionHandler | null) {
+    this.permissionHandler = handler
   }
 
   getSessionId() {
@@ -221,11 +240,18 @@ export class HermesBridge extends EventEmitter {
       '--',
       'bash',
       '-lc',
-      'exec hermes acp --accept-hooks',
+      [
+        'export LANG=C.UTF-8',
+        'export LC_ALL=C.UTF-8',
+        'export PYTHONUTF8=1',
+        'export PYTHONIOENCODING=utf-8',
+        'export HERMES_TEXT_ENCODING=utf-8',
+        'exec hermes acp --accept-hooks',
+      ].join('; '),
     ], {
       stdio: 'pipe',
       windowsHide: true,
-      env: { ...process.env },
+      env: createUtf8ProcessEnv(),
     })
     this.process = child
 
@@ -370,7 +396,7 @@ export class HermesBridge extends EventEmitter {
     }
 
     if (message.method) {
-      this.handleRequestOrNotification(message)
+      void this.handleRequestOrNotification(message)
       return
     }
 
@@ -415,11 +441,11 @@ export class HermesBridge extends EventEmitter {
         continue
       }
 
-      this.emitEvent({ type: 'stderr', payload: line })
+      this.emitEvent({ type: 'stderr', payload: normalizeMaybeText(line, 'stderr') ?? line })
     }
   }
 
-  private handleRequestOrNotification(message: JsonRpcMessage) {
+  private async handleRequestOrNotification(message: JsonRpcMessage) {
     const method = message.method
     if (!method) {
       return
@@ -433,7 +459,7 @@ export class HermesBridge extends EventEmitter {
 
       if (method === 'session/request_permission') {
         if (message.id !== undefined) {
-          this.sendResponse(message.id, { outcome: choosePermissionOutcome(message.params) })
+          this.sendResponse(message.id, await this.resolvePermissionRequest(message.params))
         }
         return
       }
@@ -464,6 +490,25 @@ export class HermesBridge extends EventEmitter {
     }
   }
 
+  private async resolvePermissionRequest(payload: unknown): Promise<HermesPermissionOutcome> {
+    if (!this.permissionHandler) {
+      return { outcome: 'cancelled' }
+    }
+
+    try {
+      return await this.permissionHandler(payload)
+    } catch (error) {
+      this.emitEvent({
+        type: 'status',
+        payload: {
+          stage: 'permission-error',
+          detail: error instanceof Error ? error.message : 'Permission request failed.',
+        },
+      })
+      return { outcome: 'cancelled' }
+    }
+  }
+
   private handleSessionUpdate(payload: unknown) {
     if (!payload || typeof payload !== 'object') {
       return
@@ -480,7 +525,7 @@ export class HermesBridge extends EventEmitter {
 
     if (kind === 'agent_message_chunk') {
       const messageId = this.readString(updateRecord, 'messageId') ?? this.readString(updateRecord, 'message_id') ?? undefined
-      const delta = extractAcpText(updateRecord.content)
+      const delta = normalizeMaybeText(extractAcpText(updateRecord.content) ?? undefined, 'assistant')
       if (!delta) {
         return
       }
@@ -498,7 +543,7 @@ export class HermesBridge extends EventEmitter {
     }
 
     if (kind === 'agent_thought_chunk') {
-      const delta = extractAcpText(updateRecord.content)
+      const delta = normalizeMaybeText(extractAcpText(updateRecord.content) ?? undefined, 'assistant')
       if (delta) {
         this.emitEvent({ type: 'status', payload: { stage: 'thinking', detail: delta } })
       }
@@ -511,7 +556,7 @@ export class HermesBridge extends EventEmitter {
         payload: {
           id: this.readString(updateRecord, 'toolCallId') ?? this.readString(updateRecord, 'tool_call_id') ?? undefined,
           name: this.readString(updateRecord, 'title') ?? this.readString(updateRecord, 'kind') ?? 'tool',
-          args: stringifyMaybe(updateRecord.rawInput),
+          args: normalizeMaybeText(stringifyMaybe(updateRecord.rawInput), 'tool-args'),
           status: 'running',
         },
       })
@@ -524,15 +569,20 @@ export class HermesBridge extends EventEmitter {
         payload: {
           id: this.readString(updateRecord, 'toolCallId') ?? this.readString(updateRecord, 'tool_call_id') ?? undefined,
           name: this.readString(updateRecord, 'title') ?? this.readString(updateRecord, 'kind') ?? 'tool',
-          args: stringifyMaybe(updateRecord.rawInput),
-          result: stringifyMaybe(updateRecord.rawOutput) ?? extractToolContent(updateRecord.content),
+          args: normalizeMaybeText(stringifyMaybe(updateRecord.rawInput), 'tool-args'),
+          result: normalizeMaybeText(stringifyMaybe(updateRecord.rawOutput) ?? extractToolContent(updateRecord.content), 'tool-result'),
           status: 'completed',
         },
       })
       return
     }
 
-    if (kind === 'usage_update' || kind === 'available_commands_update') {
+    if (kind === 'available_commands_update') {
+      this.emitEvent({ type: 'commands', payload: extractAvailableCommands(updateRecord) })
+      return
+    }
+
+    if (kind === 'usage_update') {
       return
     }
 
@@ -637,6 +687,62 @@ function extractToolContent(content: unknown): string | undefined {
   return text || undefined
 }
 
+function extractAvailableCommands(payload: Record<string, unknown>): HermesCommandInfo[] {
+  const candidates = [
+    payload.availableCommands,
+    payload.available_commands,
+    payload.commands,
+  ]
+
+  const rawCommands = candidates.find((candidate): candidate is unknown[] => Array.isArray(candidate)) ?? []
+  const seen = new Set<string>()
+
+  return rawCommands
+    .map((item): HermesCommandInfo | null => {
+      if (typeof item === 'string') {
+        return createCommandInfo(item, '')
+      }
+
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+
+      const record = item as Record<string, unknown>
+      const name = readStringValue(record.name)
+        ?? readStringValue(record.command)
+        ?? readStringValue(record.id)
+        ?? readStringValue(record.title)
+      const description = readStringValue(record.description)
+        ?? readStringValue(record.summary)
+        ?? readStringValue(record.title)
+        ?? ''
+
+      return name ? createCommandInfo(name, description) : null
+    })
+    .filter((item): item is HermesCommandInfo => {
+      if (!item || seen.has(item.id)) {
+        return false
+      }
+
+      seen.add(item.id)
+      return true
+    })
+}
+
+function createCommandInfo(name: string, description: string): HermesCommandInfo {
+  const normalized = name.trim().replace(/^\/+/, '')
+
+  return {
+    id: normalized.toLowerCase(),
+    name: normalized,
+    description,
+  }
+}
+
+function readStringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
 function stringifyMaybe(value: unknown): string | undefined {
   if (value === undefined || value === null) {
     return undefined
@@ -651,34 +757,4 @@ function stringifyMaybe(value: unknown): string | undefined {
   } catch {
     return undefined
   }
-}
-
-function choosePermissionOutcome(payload: unknown) {
-  if (!payload || typeof payload !== 'object') {
-    return { outcome: 'cancelled' }
-  }
-
-  const options = (payload as Record<string, unknown>).options
-  if (!Array.isArray(options)) {
-    return { outcome: 'cancelled' }
-  }
-
-  const allowOption = options.find((option) => {
-    if (!option || typeof option !== 'object') {
-      return false
-    }
-    const record = option as Record<string, unknown>
-    const id = typeof record.optionId === 'string' ? record.optionId.toLowerCase() : ''
-    const name = typeof record.name === 'string' ? record.name.toLowerCase() : ''
-    return id.includes('allow') || name.includes('allow')
-  }) ?? options[0]
-
-  if (!allowOption || typeof allowOption !== 'object') {
-    return { outcome: 'cancelled' }
-  }
-
-  const optionId = (allowOption as Record<string, unknown>).optionId
-  return typeof optionId === 'string'
-    ? { outcome: 'selected', optionId }
-    : { outcome: 'cancelled' }
 }

@@ -48,6 +48,7 @@ interface WorkspaceStore {
     tasks: WorkspaceTask[]
     windows: WindowsInteropState
   }) => void
+  setDirectoryChildren: (path: string, children: WorkspaceFileNode[]) => void
   toggleExpandedPath: (path: string) => void
   setSelectedFilePath: (path: string | null) => void
   setPreview: (preview: WorkspaceFilePreview | null) => void
@@ -92,6 +93,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       selectedFilePath: state.cwd === snapshot.cwd ? state.selectedFilePath : null,
       preview: state.cwd === snapshot.cwd ? state.preview : null,
     })),
+  setDirectoryChildren: (targetPath, children) =>
+    set((state) => ({
+      files: updateDirectoryChildren(state.files, targetPath, children),
+    })),
   toggleExpandedPath: (path) =>
     set((state) => ({
       expandedPaths: state.expandedPaths.includes(path)
@@ -102,3 +107,24 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   setPreview: (preview) => set({ preview }),
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
 }))
+
+function updateDirectoryChildren(
+  nodes: WorkspaceFileNode[],
+  targetPath: string,
+  children: WorkspaceFileNode[],
+): WorkspaceFileNode[] {
+  return nodes.map((node) => {
+    if (node.path === targetPath && node.type === 'directory') {
+      return { ...node, children }
+    }
+
+    if (node.children) {
+      return {
+        ...node,
+        children: updateDirectoryChildren(node.children, targetPath, children),
+      }
+    }
+
+    return node
+  })
+}

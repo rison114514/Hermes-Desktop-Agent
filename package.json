@@ -16,6 +16,7 @@
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
+    "test:core": "npm run build:main && node scripts/verify-core.mjs",
     "preview": "vite preview",
     "electron:preview": "npm run electron:windows",
     "electron:windows": "cross-env ELECTRON_IS_DEV=0 electron .",

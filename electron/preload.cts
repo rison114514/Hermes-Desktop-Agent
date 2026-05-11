@@ -22,6 +22,7 @@ const api = {
   selectWorkspaceDirectory: () => ipcRenderer.invoke('workspace:select-directory'),
   switchWorkspaceRoot: (workspacePath: string) => ipcRenderer.invoke('workspace:switch-root', workspacePath),
   getWorkspaceSnapshot: () => ipcRenderer.invoke('workspace:get-snapshot'),
+  readWorkspaceDirectory: (directoryPath: string) => ipcRenderer.invoke('workspace:read-directory', directoryPath),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
   getHermesSkills: () => ipcRenderer.invoke('hermes:get-skills'),
   readWorkspaceFile: (filePath: string) => ipcRenderer.invoke('workspace:read-file', filePath),

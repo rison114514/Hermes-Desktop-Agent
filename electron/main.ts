@@ -1,11 +1,19 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, nativeImage } from 'electron'
-import type { OpenDialogOptions } from 'electron'
-import { access, readdir, readFile } from 'node:fs/promises'
-import type { Dirent } from 'node:fs'
+import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
+import { access, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HermesBridge, type HermesBridgeEvent } from './hermes-bridge.js'
+import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOutcome } from './hermes-bridge.js'
+import {
+  canPreviewFile,
+  FILE_PREVIEW_MAX_CHARS,
+  inferLanguageFromPath,
+  looksBinary,
+} from './file-preview.js'
 import { readWindowState, writeWindowState } from './window-state.js'
+import { isPathInside } from './workspace-security.js'
+import { readWorkspaceState, writeWorkspaceState } from './workspace-state.js'
+import { readWorkspaceDirectory, type WorkspaceFileNode } from './workspace-tree.js'
 import {
   getWindowsInteropSnapshot,
   openPathWithDefaultApp,
@@ -24,6 +32,7 @@ const __dirname = path.dirname(__filename)
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const hermesBridge = new HermesBridge()
+hermesBridge.setPermissionHandler((payload) => requestHermesPermission(payload))
 let bridgeBound = false
 let isQuitting = false
 let workspaceRoot = process.cwd()
@@ -40,13 +49,6 @@ type HermesSkillSnapshot = {
   category: string
   description: string
   enabled: boolean
-}
-
-type WorkspaceFileNode = {
-  name: string
-  path: string
-  type: 'file' | 'directory'
-  children?: WorkspaceFileNode[]
 }
 
 type HermesWorktreeInfo = {
@@ -137,22 +139,12 @@ async function createWindow() {
     console.error('[electron] render-process-gone', details)
   })
 
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    if (typeof detailsOrLevel === 'object' && detailsOrLevel !== null) {
-      console.log('[renderer]', {
-        level: (detailsOrLevel as { level?: number }).level,
-        message: (detailsOrLevel as { message?: string }).message,
-        line: (detailsOrLevel as { lineNumber?: number }).lineNumber,
-        sourceId: (detailsOrLevel as { sourceId?: string }).sourceId,
-      })
-      return
-    }
-
+  mainWindow.webContents.on('console-message', (details: ElectronEvent<WebContentsConsoleMessageEventParams>) => {
     console.log('[renderer]', {
-      level: detailsOrLevel,
-      message,
-      line,
-      sourceId,
+      level: details.level,
+      message: details.message,
+      line: details.lineNumber,
+      sourceId: details.sourceId,
     })
   })
 
@@ -199,7 +191,8 @@ function registerShortcuts() {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await restoreWorkspaceRoot()
   void createWindow()
   createTray()
   registerShortcuts()
@@ -241,6 +234,7 @@ ipcMain.handle('hermes:load-session', async (_event, sessionId: string, cwd: str
   await assertWorkspaceExists(nextWorkspaceRoot)
   workspaceRoot = nextWorkspaceRoot
   await hermesBridge.loadSession(sessionId, workspaceRoot)
+  queuePersistWorkspaceRoot(sessionId)
   return createWorkspaceSnapshot()
 })
 
@@ -248,6 +242,7 @@ ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorkt
   const worktree = await createHermesWorktree(workspaceRoot, options)
   workspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)
   await hermesBridge.startNewSession(workspaceRoot)
+  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
   return {
     worktree,
     snapshot: await createWorkspaceSnapshot(),
@@ -263,6 +258,7 @@ ipcMain.handle('workspace:switch-worktree', async (_event, worktreePath: string)
   await assertWorkspaceExists(nextWorkspaceRoot)
   workspaceRoot = nextWorkspaceRoot
   await hermesBridge.startNewSession(workspaceRoot)
+  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
 })
 
@@ -274,6 +270,7 @@ ipcMain.handle('workspace:switch-root', async (_event, hostPath: string) => {
   await assertWorkspaceExists(hostPath)
   workspaceRoot = hostPath
   await hermesBridge.startNewSession(workspaceRoot)
+  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
 })
 
@@ -288,7 +285,7 @@ ipcMain.handle('workspace:get-snapshot', async () => {
   return {
     cwd,
     session: hermesBridge.getSessionId() ?? 'Local desktop session',
-    files: await readWorkspaceTree(cwd),
+    files: await readWorkspaceDirectory(cwd),
     tasks: [
       { id: 'task-layout', title: '完成三栏布局骨架', done: true },
       { id: 'task-bridge', title: '接通 WSL Hermes ACP 桥接', done: true },
@@ -306,6 +303,29 @@ ipcMain.handle('workspace:get-snapshot', async () => {
   }
 })
 
+ipcMain.handle('workspace:read-directory', async (_event, directoryPath: string) => {
+  const cwd = workspaceRoot
+  const normalized = path.normalize(directoryPath || '')
+  const absolutePath = path.resolve(cwd, normalized)
+
+  if (!isPathInside(cwd, absolutePath)) {
+    return { ok: false, error: '禁止读取工作区之外的目录。' }
+  }
+
+  try {
+    return {
+      ok: true,
+      path: normalized === '.' ? '' : normalized.replace(/\\/g, '/'),
+      files: await readWorkspaceDirectory(cwd, normalized),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '读取目录失败。',
+    }
+  }
+})
+
 ipcMain.handle('workspace:read-file', async (_event, filePath: string) => {
   const cwd = workspaceRoot
   const normalized = path.normalize(filePath)
@@ -316,14 +336,28 @@ ipcMain.handle('workspace:read-file', async (_event, filePath: string) => {
   }
 
   try {
-    const content = await readFile(absolutePath, 'utf8')
-    const maxChars = 12000
+    const metadata = await stat(absolutePath)
+    if (!metadata.isFile()) {
+      return { ok: false, error: 'Only regular files can be previewed.' }
+    }
+
+    const previewable = canPreviewFile(absolutePath, metadata.size)
+    if (!previewable.ok) {
+      return { ok: false, error: previewable.error }
+    }
+
+    const buffer = await readFile(absolutePath)
+    if (looksBinary(buffer)) {
+      return { ok: false, error: 'Binary files are not previewed.' }
+    }
+
+    const content = buffer.toString('utf8')
     return {
       ok: true,
       path: normalized,
-      content: content.slice(0, maxChars),
+      content: content.slice(0, FILE_PREVIEW_MAX_CHARS),
       language: inferLanguageFromPath(normalized),
-      truncated: content.length > maxChars,
+      truncated: content.length > FILE_PREVIEW_MAX_CHARS,
     }
   } catch (error) {
     return {
@@ -463,6 +497,36 @@ async function persistCurrentWindowState() {
   })
 }
 
+async function restoreWorkspaceRoot() {
+  const state = await readWorkspaceState(app.getPath('userData'))
+  if (!state.workspaceRoot) {
+    return
+  }
+
+  try {
+    await assertWorkspaceExists(state.workspaceRoot)
+    workspaceRoot = state.workspaceRoot
+  } catch (error) {
+    console.warn('[workspace] failed to restore workspace root', {
+      workspaceRoot: state.workspaceRoot,
+      error: error instanceof Error ? error.message : error,
+    })
+  }
+}
+
+async function persistWorkspaceRoot(lastSessionId?: string) {
+  await writeWorkspaceState(app.getPath('userData'), {
+    workspaceRoot,
+    lastSessionId,
+  })
+}
+
+function queuePersistWorkspaceRoot(lastSessionId?: string) {
+  void persistWorkspaceRoot(lastSessionId).catch((error) => {
+    console.warn('[workspace] failed to persist workspace root', error)
+  })
+}
+
 function updateTrayMenu() {
   if (!tray) {
     return
@@ -484,6 +548,99 @@ function updateTrayMenu() {
       { label: '退出', click: () => app.quit() },
     ]),
   )
+}
+
+async function requestHermesPermission(payload: unknown): Promise<HermesPermissionOutcome> {
+  const options = readPermissionOptions(payload)
+  const allowOption = findPermissionOption(options, ['allow', 'approve', 'yes'])
+  const denyOption = findPermissionOption(options, ['deny', 'reject', 'cancel', 'no'])
+  const detail = createPermissionDetail(payload)
+  const result = mainWindow
+    ? await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Hermes permission request',
+        message: 'Hermes is requesting permission to continue.',
+        detail,
+        buttons: ['Deny', 'Allow'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      })
+    : await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Hermes permission request',
+        message: 'Hermes is requesting permission to continue.',
+        detail,
+        buttons: ['Deny', 'Allow'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      })
+
+  if (result.response === 1 && allowOption) {
+    return { outcome: 'selected', optionId: allowOption.optionId }
+  }
+
+  if (result.response === 0 && denyOption) {
+    return { outcome: 'selected', optionId: denyOption.optionId }
+  }
+
+  return { outcome: 'cancelled' }
+}
+
+type PermissionOption = {
+  optionId: string
+  name?: string
+}
+
+function readPermissionOptions(payload: unknown): PermissionOption[] {
+  if (!payload || typeof payload !== 'object') {
+    return []
+  }
+
+  const options = (payload as Record<string, unknown>).options
+  if (!Array.isArray(options)) {
+    return []
+  }
+
+  return options.flatMap((option) => {
+    if (!option || typeof option !== 'object') {
+      return []
+    }
+
+    const record = option as Record<string, unknown>
+    return typeof record.optionId === 'string'
+      ? [{ optionId: record.optionId, name: typeof record.name === 'string' ? record.name : undefined }]
+      : []
+  })
+}
+
+function findPermissionOption(options: PermissionOption[], keywords: string[]) {
+  return options.find((option) => {
+    const haystack = `${option.optionId} ${option.name ?? ''}`.toLowerCase()
+    return keywords.some((keyword) => haystack.includes(keyword))
+  })
+}
+
+function createPermissionDetail(payload: unknown) {
+  const text = stringifyPermissionPayload(payload)
+  return text.length > 4000 ? `${text.slice(0, 4000)}\n...` : text
+}
+
+function stringifyPermissionPayload(payload: unknown) {
+  if (!payload) {
+    return 'No permission details were provided by Hermes.'
+  }
+
+  if (typeof payload === 'string') {
+    return payload
+  }
+
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return 'Hermes provided permission details that could not be displayed.'
+  }
 }
 
 function getTrayIconDataUrl() {
@@ -516,7 +673,7 @@ async function createWorkspaceSnapshot() {
   return {
     cwd: workspaceRoot,
     session: hermesBridge.getSessionId() ?? 'Local desktop session',
-    files: await readWorkspaceTree(workspaceRoot),
+    files: await readWorkspaceDirectory(workspaceRoot),
     tasks: [
       { id: 'task-layout', title: 'Desktop three-panel shell', done: true },
       { id: 'task-bridge', title: 'WSL Hermes ACP bridge', done: true },
@@ -665,14 +822,25 @@ async function finalizeHermesWorktree(root: string, worktreePath: string) {
 
 async function listHermesWorktrees(hostPath: string): Promise<HermesWorktreeInfo[]> {
   const wslRoot = windowsPathToWslPath(hostPath)
-  const output = await runWslCommand([
-    'git',
-    '-C',
-    wslRoot,
-    'worktree',
-    'list',
-    '--porcelain',
-  ])
+  let output = ''
+
+  try {
+    output = await runWslCommand([
+      'git',
+      '-C',
+      wslRoot,
+      'worktree',
+      'list',
+      '--porcelain',
+    ])
+  } catch (error) {
+    if (isNotGitRepositoryError(error)) {
+      return []
+    }
+
+    throw error
+  }
+
   const currentWslPath = windowsPathToWslPath(workspaceRoot)
   const worktrees: HermesWorktreeInfo[] = []
   let current: Partial<HermesWorktreeInfo> | null = null
@@ -718,6 +886,11 @@ async function listHermesWorktrees(hostPath: string): Promise<HermesWorktreeInfo
   return worktrees
 }
 
+function isNotGitRepositoryError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('not a git repository')
+}
+
 function normalizeWorktreeInfo(info: Partial<HermesWorktreeInfo>, currentWslPath: string): HermesWorktreeInfo {
   const worktreePath = info.path ?? ''
   return {
@@ -732,91 +905,6 @@ function normalizeWorktreeInfo(info: Partial<HermesWorktreeInfo>, currentWslPath
 
 function normalizeWslPath(value: string) {
   return value.replace(/\/+$/, '')
-}
-
-const WORKSPACE_TREE_MAX_DEPTH = 4
-const WORKSPACE_TREE_MAX_ENTRIES = 120
-const IGNORED_WORKSPACE_NAMES = new Set(['.git', 'node_modules', 'dist', 'dist-electron'])
-
-async function readWorkspaceTree(rootDir: string): Promise<WorkspaceFileNode[]> {
-  const counter = { value: 0 }
-  return readWorkspaceDirectory(rootDir, '', 0, counter)
-}
-
-async function readWorkspaceDirectory(
-  absoluteDir: string,
-  relativeDir: string,
-  depth: number,
-  counter: { value: number },
-): Promise<WorkspaceFileNode[]> {
-  if (depth > WORKSPACE_TREE_MAX_DEPTH || counter.value >= WORKSPACE_TREE_MAX_ENTRIES) {
-    return []
-  }
-
-  let entries: Dirent[] = []
-  try {
-    entries = await readdir(absoluteDir, { withFileTypes: true })
-  } catch {
-    return []
-  }
-
-  const visibleEntries = entries
-    .filter((entry) => !entry.name.startsWith('.') || entry.name === '.env.example')
-    .filter((entry) => !IGNORED_WORKSPACE_NAMES.has(entry.name))
-    .sort((left, right) => {
-      if (left.isDirectory() !== right.isDirectory()) {
-        return left.isDirectory() ? -1 : 1
-      }
-      return left.name.localeCompare(right.name)
-    })
-
-  const nodes: WorkspaceFileNode[] = []
-
-  for (const entry of visibleEntries) {
-    if (counter.value >= WORKSPACE_TREE_MAX_ENTRIES) {
-      break
-    }
-
-    const relativePath = relativeDir ? path.posix.join(relativeDir, entry.name) : entry.name
-    const absolutePath = path.join(absoluteDir, entry.name)
-    counter.value += 1
-
-    if (entry.isDirectory()) {
-      nodes.push({
-        name: entry.name,
-        path: relativePath,
-        type: 'directory',
-        children: await readWorkspaceDirectory(absolutePath, relativePath, depth + 1, counter),
-      })
-      continue
-    }
-
-    nodes.push({
-      name: entry.name,
-      path: relativePath,
-      type: 'file',
-    })
-  }
-
-  return nodes
-}
-
-function inferLanguageFromPath(filePath: string) {
-  const ext = path.extname(filePath).toLowerCase()
-  const map: Record<string, string> = {
-    '.ts': 'typescript',
-    '.tsx': 'tsx',
-    '.js': 'javascript',
-    '.jsx': 'jsx',
-    '.json': 'json',
-    '.md': 'markdown',
-    '.css': 'css',
-    '.html': 'html',
-    '.sh': 'bash',
-    '.yml': 'yaml',
-    '.yaml': 'yaml',
-  }
-  return map[ext] ?? (ext.slice(1) || 'text')
 }
 
 async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
@@ -869,9 +957,4 @@ async function readHermesSkillsSnapshot(): Promise<HermesSkillSnapshot[]> {
   } catch {
     return []
   }
-}
-
-function isPathInside(root: string, target: string) {
-  const relative = path.relative(path.resolve(root), path.resolve(target))
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }

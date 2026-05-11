@@ -496,3 +496,169 @@ wsl.exe -d <distro> -- wslpath -w "/mnt/e/Hermes-Desktop-Agent"
 6. 实测 Windows 原生中文输入法候选框。
 7. 更新 README 为 Windows 原生优先。
 8. 清理未跟踪文件并确认版本记录范围。
+
+---
+
+## 当前优化计划（2026-05-11）
+
+本轮优化目标是在不改变主产品方向的前提下，优先补齐桌面助手的可用性、可测试性和安全边界。
+
+### O1 - 工作区上下文刷新
+
+状态：已完成。
+
+目标：
+- 在右侧“工作区 / 上下文与任务”标题区加入刷新按钮。
+- 点击刷新后重新拉取 workspace snapshot，更新文件树、路径、任务和 Windows/WSL 状态。
+- 如果当前选中文件仍存在，同步重新读取文件预览内容。
+- 如果当前选中文件已删除，清空预览，避免显示过期内容。
+
+验收：
+- 文件夹新增、删除或修改文件后，点击刷新能正确反映到文件树。
+- 当前预览文件内容变更后，点击刷新能显示最新内容。
+- 刷新过程中按钮有明确 loading 状态，且不会重复触发并发刷新。
+
+### O2 - 拆分 Electron interop 与纯 WSL/path 能力
+
+状态：已完成。
+
+目标：
+- 将 Windows/WSL 路径转换、`wsl.exe` 命令执行等纯 Node 能力移入独立模块。
+- `HermesBridge` 不再依赖 `electron/windows-interop.ts`，避免普通 Node 测试时加载 Electron `clipboard` / `shell`。
+- 保持 renderer/main 现有 IPC API 不变，避免影响用户操作路径。
+
+验收：
+- `npm run build` 通过。
+- 普通 Node 脚本可以直接 import `dist-electron/electron/hermes-bridge.js`。
+- `windows-interop.ts` 继续作为 Electron native interop 门面，对外 API 保持兼容。
+
+### O3 - ACP 权限审批收敛
+
+状态：已完成。
+
+目标：
+- 移除 `session/request_permission` 的无条件自动 allow 倾向。
+- 通过 Electron 原生确认框展示权限请求内容，要求用户显式允许或拒绝。
+- 未配置权限处理器或审批失败时默认拒绝。
+
+验收：
+- Hermes 后端请求权限时，用户必须能看到请求内容。
+- 未获用户确认时，不自动选择 allow。
+- 拒绝、审批失败、后端退出都能反馈为取消或错误状态。
+
+### O4 - 最近 workspace / session 持久化
+
+状态：已完成。
+
+目标：
+- 将最近使用的 workspace root、WSL distro、session id 写入 Electron userData。
+- 启动时优先恢复上一次 workspace，而不是始终回到 `process.cwd()`。
+- 保留失败回退：路径不存在或 WSL 不可用时回到应用目录并提示。
+
+当前进展：
+- 已新增 `workspace-state.json` 持久化。
+- 已在启动时恢复最近 workspace root。
+- 已在加载 session、切换 workspace、创建/切换 worktree 后写回最近 workspace root。
+- session id 已预留写入字段，后续再决定是否自动恢复历史 session，避免启动时隐式改变 ACP 会话上下文。
+
+验收：
+- 应用重启后右侧工作区恢复到上次选择的目录。
+- WSL distro 展示与实际启动配置一致。
+- 恢复失败不会阻塞应用打开。
+
+### O5 - 文件树能力增强
+
+状态：已完成。
+
+目标：
+- 当前文件树深度和数量限制较小，后续改为懒加载或按目录展开加载。
+- 尊重 `.gitignore` 或提供桌面助手自己的 ignore 规则。
+- 对超大文件、二进制文件、不可读文件给出明确预览状态。
+
+当前进展：
+- 已为文件预览增加 regular file 检查。
+- 已为文件预览增加大小限制。
+- 已为常见二进制扩展名和内容采样增加预览拦截。
+- 已将预览安全策略纳入 `npm run test:core`。
+- 已将文件树改为顶层 snapshot + 展开目录时懒加载。
+- 已将默认忽略规则和 `.gitignore` 简单规则统一放在主进程侧执行。
+- 已将 ignore 规则和懒加载行为纳入 `npm run test:core`。
+
+验收：
+- 中大型仓库下文件树可用，不因一次 snapshot 扫描卡顿。
+- 文件预览不会尝试读取明显的二进制或超大文件。
+- 越界读取保护继续有效。
+
+### O5a - 核心安全与桥接测试
+
+状态：已完成。
+
+目标：
+- 为 Windows/WSL 路径转换建立最小回归验证。
+- 为 workspace 文件读取越界判断建立最小回归验证。
+- 为 ACP permission 默认拒绝策略建立最小回归验证。
+- 提供可重复运行的 `npm run test:core` 命令。
+
+验收：
+- `npm run test:core` 通过。
+- `HermesBridge` 仍可在普通 Node 环境中导入。
+- 测试不依赖 Electron GUI 或真实 Hermes 后端。
+
+### O6 - 编码与维护体验
+
+状态：进行中。
+
+目标：
+- 修正 PowerShell/脚本输出中文乱码问题。
+- 启动脚本设置 UTF-8 输出环境，减少 README、PLAN、源码文案排障成本。
+- 后续文案修改统一保持 UTF-8。
+
+验收：
+- `Get-Content README.MD`、`Get-Content PLAN.md` 在推荐启动环境中中文可读。
+- 日常构建、启动脚本日志不再出现大面积乱码。
+
+当前进展：
+- 已在 `start-hermes-desktop.cmd` 设置 `chcp 65001`、`PYTHONUTF8`、`PYTHONIOENCODING`、`LANG`、`LC_ALL` 和 `HERMES_TEXT_ENCODING`。
+- 已在 `scripts/start-windows.ps1` 设置 PowerShell UTF-8 输出和同一组 UTF-8 环境变量。
+- 已将 Node 侧命令执行改为 Buffer 接收、显式解码，避免隐式依赖 Windows 默认 code page。
+- 已为 Hermes ACP 的 WSL 启动命令注入 `C.UTF-8` locale 和 Python UTF-8 环境。
+- 已将 UTF-8 环境与命令输出解码纳入 `npm run test:core`。
+- 已新增工具结果 normalization 层，对 assistant chunk、stderr、tool args、tool result 清理控制字符并标记疑似乱码。
+- 已将工具结果乱码检测纳入 `npm run test:core`，覆盖中文、`•`、控制字符和典型 mojibake。
+
+后续：
+- 本仓库没有 Python execute 沙箱实现，stdout/stderr `sys.reconfigure(...)` 需要在 Hermes 后端或 execute 工具执行器仓库接入。
+- 如果后续桌面端接管本地工具执行，需要新增统一 Python bootstrap 模板，禁止裸跑脚本。
+
+### O7 - WSL 发行版自动检测
+
+状态：已完成。
+
+目标：
+- 启动脚本未显式传入 `-Distro` 且未设置 `HERMES_WSL_DISTRO` 时，使用 `wsl.exe -l -v` 自动检测默认 WSL 发行版。
+- 优先选择带 `*` 的默认发行版；没有默认标记时回退到列表中的第一个发行版。
+- 将检测结果写入 `HERMES_WSL_DISTRO`，保证 Electron 主进程和 Hermes bridge 使用同一个发行版。
+
+验收：
+- 用户不再必须使用固定的 `Ubuntu-22.04` 发行版名称。
+- 多发行版机器上默认使用 `wsl.exe -l -v` 标记的默认发行版。
+- 检测不到发行版时启动脚本给出明确错误。
+
+### O8 - Chat input composer enhancements
+
+Status: completed.
+
+Scope:
+- Make the chat textarea adapt to multi-line and long text, with bounded height and internal scrolling.
+- Add a Codex-like large paste fallback: pasted text over 800 characters is replaced in the prompt by `[pasted XXXX chars]`.
+- Add `/` as a desktop-side Hermes command entrypoint.
+- Surface Hermes `available_commands_update` events to the renderer.
+- Combine Hermes built-in commands and installed Hermes skills in the `/` suggestion list.
+- Support keyboard completion with ArrowUp, ArrowDown, Tab, Escape, Enter, and Shift+Enter.
+
+Acceptance:
+- Plain chat messages still send as regular `session/prompt` text.
+- `/<name> <args>` is sent directly to Hermes.
+- Typing `/` shows command and skill suggestions.
+- Large paste summaries keep the composer responsive and readable.
+- IME composition is not interrupted by Enter-to-send behavior.

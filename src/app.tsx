@@ -15,6 +15,7 @@ export default function App() {
   const setPreviewLoading = useWorkspaceStore((state) => state.setPreviewLoading)
   const setHermesConfig = useSkillsStore((state) => state.setHermesConfig)
   const setSkills = useSkillsStore((state) => state.setSkills)
+  const setCommands = useSkillsStore((state) => state.setCommands)
   const addMessage = useChatStore((state) => state.addMessage)
   const appendChunk = useChatStore((state) => state.appendChunk)
   const finalizeMessage = useChatStore((state) => state.finalizeMessage)
@@ -132,6 +133,11 @@ export default function App() {
         return
       }
 
+      if (event.type === 'commands') {
+        setCommands(event.payload)
+        return
+      }
+
       if (event.type === 'status') {
         setConnectionLabel(event.payload.detail)
         return
@@ -176,6 +182,7 @@ export default function App() {
     finalizeMessage,
     replaceMessage,
     setActiveAssistant,
+    setCommands,
     setConnectionLabel,
     touchAssistantMessage,
     upsertToolMessage,
