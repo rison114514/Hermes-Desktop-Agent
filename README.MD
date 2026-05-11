@@ -57,10 +57,17 @@ WSL 侧：
 - `hermes acp --help` 可正常输出。
 - 已存在 `~/.hermes/` 配置目录。
 
-默认 WSL 发行版为 `Ubuntu-22.04`。如需覆盖：
+默认会自动检测系统中安装的 WSL 发行版，首选默认设为 `Ubuntu-24.04`。如需覆盖：
 
 ```powershell
-$env:HERMES_WSL_DISTRO = "Ubuntu-22.04"
+$env:HERMES_WSL_DISTRO = "Ubuntu-24.04"
+.\start-hermes-desktop.cmd
+```
+
+或直接指定参数：
+
+```powershell
+.\start-hermes-desktop.cmd -Distro Ubuntu-24.04
 ```
 
 ## 一键启动

@@ -10,6 +10,7 @@ import { useWorkspaceStore } from '@/store/workspace'
 
 export default function App() {
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
+  const setLastRefreshedAt = useWorkspaceStore((state) => state.setLastRefreshedAt)
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
   const setPreview = useWorkspaceStore((state) => state.setPreview)
   const setPreviewLoading = useWorkspaceStore((state) => state.setPreviewLoading)
@@ -30,7 +31,10 @@ export default function App() {
       return
     }
 
-    void window.hermesDesktop.getWorkspaceSnapshot().then(setSnapshot).catch(() => {
+    void window.hermesDesktop.getWorkspaceSnapshot().then((snapshot) => {
+      setSnapshot(snapshot)
+      setLastRefreshedAt(Date.now())
+    }).catch(() => {
       // 当 IPC 不可用时，保留默认占位数据。
     })
     void window.hermesDesktop.getHermesConfig().then(setHermesConfig).catch(() => {
@@ -43,7 +47,7 @@ export default function App() {
     void window.hermesDesktop.getWindowState().then(setWindowState).catch(() => {
       // 当 IPC 不可用时，保留默认窗口状态。
     })
-  }, [setHermesConfig, setSkills, setSnapshot, setWindowState])
+  }, [setHermesConfig, setSkills, setSnapshot, setLastRefreshedAt, setWindowState])
 
   useEffect(() => {
     if (!window.hermesDesktop || !selectedFilePath) {

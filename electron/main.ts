@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, nativeImage, session } from 'electron'
 import type { OpenDialogOptions } from 'electron'
 import { access, readdir, readFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
@@ -17,6 +17,13 @@ import {
   wslPathToWindowsPath,
   writeWindowsClipboard,
 } from './windows-interop.js'
+
+app.commandLine.appendSwitch('disable-features', 'OutOfBlinkCors')
+app.commandLine.appendSwitch('ignore-certificate-errors')
+app.commandLine.appendSwitch('disable-component-update')
+app.commandLine.appendSwitch('no-sandbox')
+
+app.setAsDefaultProtocolClient('hermes-desktop')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -138,6 +145,15 @@ async function createWindow() {
   })
 
   mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
+    if (typeof message === 'string' && (
+      message.includes('ssl_client_socket_impl') ||
+      message.includes('handshake failed') ||
+      message.includes('net_error') ||
+      message.includes('SSL error')
+    )) {
+      return
+    }
+
     if (typeof detailsOrLevel === 'object' && detailsOrLevel !== null) {
       console.log('[renderer]', {
         level: (detailsOrLevel as { level?: number }).level,
@@ -200,6 +216,10 @@ function registerShortcuts() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false)
+  })
+
   void createWindow()
   createTray()
   registerShortcuts()

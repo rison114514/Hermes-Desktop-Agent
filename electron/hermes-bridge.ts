@@ -35,7 +35,7 @@ type PendingRequest = {
   timeout: NodeJS.Timeout
 }
 
-const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
+const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu'
 
 export class HermesBridge extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | null = null

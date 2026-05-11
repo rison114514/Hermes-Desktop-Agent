@@ -8,8 +8,40 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
+function Get-DefaultWslDistro {
+  try {
+    $output = wsl.exe -l -v 2>&1
+    if ($LASTEXITCODE -eq 0 -and $output) {
+      $lines = @($output -split "`n" | Select-Object -Skip 1 | ForEach-Object {
+        $line = $_.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+          $line = $line -replace '[\x00-\x1F]', ''
+          if ($line -match '^\*?\s*([^\s]+)') {
+            $distro = $matches[1].Trim()
+            if (-not [string]::IsNullOrWhiteSpace($distro)) {
+              $distro
+            }
+          }
+        }
+      })
+      if ($lines.Count -gt 0) {
+        return $lines[0]
+      }
+    }
+
+    $commonDistros = @("Ubuntu", "Ubuntu-24.04", "Ubuntu-22.04")
+    foreach ($distro in $commonDistros) {
+      $result = wsl.exe -d $distro -- echo ok 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        return $distro
+      }
+    }
+  } catch {}
+  return "Ubuntu"
+}
+
 if ([string]::IsNullOrWhiteSpace($Distro)) {
-  $Distro = "Ubuntu-22.04"
+  $Distro = Get-DefaultWslDistro
 }
 
 $env:HERMES_WSL_DISTRO = $Distro

@@ -41,6 +41,9 @@ interface WorkspaceStore {
   previewLoading: boolean
   tasks: WorkspaceTask[]
   windows: WindowsInteropState
+  autoRefreshEnabled: boolean
+  autoRefreshInterval: number
+  lastRefreshedAt: number | null
   setSnapshot: (snapshot: {
     cwd: string
     session: string
@@ -52,6 +55,9 @@ interface WorkspaceStore {
   setSelectedFilePath: (path: string | null) => void
   setPreview: (preview: WorkspaceFilePreview | null) => void
   setPreviewLoading: (loading: boolean) => void
+  setAutoRefreshEnabled: (enabled: boolean) => void
+  setAutoRefreshInterval: (interval: number) => void
+  setLastRefreshedAt: (time: number | null) => void
 }
 
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
@@ -71,13 +77,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   windows: {
     available: false,
     hostPlatform: 'win32',
-    distro: 'Ubuntu-22.04',
+    distro: 'Ubuntu',
     workspaceMode: 'windows-workspace',
     wslPath: '/home/rison/hermes-desktop-agent',
     windowsPath: null,
     uncPath: null,
     clipboardPreview: '',
   },
+  autoRefreshEnabled: false,
+  autoRefreshInterval: 10000,
+  lastRefreshedAt: null,
   setSnapshot: (snapshot) =>
     set((state) => ({
       cwd: snapshot.cwd,
@@ -101,4 +110,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   setSelectedFilePath: (path) => set({ selectedFilePath: path }),
   setPreview: (preview) => set({ preview }),
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
+  setAutoRefreshEnabled: (enabled) => set({ autoRefreshEnabled: enabled }),
+  setAutoRefreshInterval: (interval) => set({ autoRefreshInterval: interval }),
+  setLastRefreshedAt: (time) => set({ lastRefreshedAt: time }),
 }))

@@ -17,7 +17,7 @@ export interface WindowsInteropResult {
   error?: string
 }
 
-const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
+const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu'
 
 function execFileAsync(command: string, args: string[]) {
   return new Promise<string>((resolve, reject) => {
