@@ -662,3 +662,24 @@ Acceptance:
 - Typing `/` shows command and skill suggestions.
 - Large paste summaries keep the composer responsive and readable.
 - IME composition is not interrupted by Enter-to-send behavior.
+
+### O9 - 对话打断、公式渲染与文件右键操作
+
+状态：已完成。
+
+目标：
+- 前端提供当前回合打断按钮，能够终止正在进行的 Hermes 响应。
+- 消息渲染支持 LaTeX inline math 和 display math。
+- 工作区文件树支持右键菜单，提供打开、在文件资源管理器打开、重命名、复制路径、复制相对路径。
+
+当前进展：
+- 已新增 `hermes:cancel-message` IPC，并在 Hermes bridge 中优先调用 `session/cancel`，失败时停止后端作为兜底。
+- 已在输入框旁加入当前回合取消按钮。
+- 已接入 KaTeX，支持 `$...$`、`\(...\)`、`$$...$$` 和 `\[...\]`。
+- 已新增 workspace item IPC：reveal、open、resolve paths、rename。
+- 已在文件树加入自绘右键菜单，重命名后刷新 workspace snapshot。
+
+验收：
+- `npm run build` 通过。
+- `npm run test:core` 通过。
+- 构建时 KaTeX 引入后 renderer chunk 超过 500 kB，仅为 Vite size warning，功能构建成功。

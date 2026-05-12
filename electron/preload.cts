@@ -3,6 +3,7 @@ import type { HermesBridgeEvent } from './hermes-bridge.js'
 
 const api = {
   sendMessage: (message: string) => ipcRenderer.invoke('hermes:send-message', message),
+  cancelMessage: () => ipcRenderer.invoke('hermes:cancel-message'),
   onHermesEvent: (listener: (event: HermesBridgeEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: HermesBridgeEvent) => {
       listener(payload)
@@ -23,6 +24,10 @@ const api = {
   switchWorkspaceRoot: (workspacePath: string) => ipcRenderer.invoke('workspace:switch-root', workspacePath),
   getWorkspaceSnapshot: () => ipcRenderer.invoke('workspace:get-snapshot'),
   readWorkspaceDirectory: (directoryPath: string) => ipcRenderer.invoke('workspace:read-directory', directoryPath),
+  revealWorkspaceItem: (itemPath: string) => ipcRenderer.invoke('workspace:reveal-item', itemPath),
+  openWorkspaceItem: (itemPath: string) => ipcRenderer.invoke('workspace:open-item', itemPath),
+  getWorkspaceItemPaths: (itemPath: string) => ipcRenderer.invoke('workspace:get-item-paths', itemPath),
+  renameWorkspaceItem: (itemPath: string, nextName: string) => ipcRenderer.invoke('workspace:rename-item', itemPath, nextName),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
   getHermesSkills: () => ipcRenderer.invoke('hermes:get-skills'),
   readWorkspaceFile: (filePath: string) => ipcRenderer.invoke('workspace:read-file', filePath),

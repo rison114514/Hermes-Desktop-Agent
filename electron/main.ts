@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, nativeImage } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
-import { access, readFile, stat } from 'node:fs/promises'
+import { access, readFile, rename, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOutcome } from './hermes-bridge.js'
@@ -221,8 +221,17 @@ app.on('will-quit', () => {
 })
 
 ipcMain.handle('hermes:send-message', async (_event, message: string) => {
-  hermesBridge.sendMessage(message)
+  void hermesBridge.sendMessage(message).catch((error) => {
+    mainWindow?.webContents.send('hermes:event', {
+      type: 'stderr',
+      payload: error instanceof Error ? error.message : 'Failed to send Hermes message.',
+    } satisfies HermesBridgeEvent)
+  })
   return { ok: true }
+})
+
+ipcMain.handle('hermes:cancel-message', async () => {
+  return hermesBridge.cancelActivePrompt()
 })
 
 ipcMain.handle('hermes:list-sessions', async () => {
@@ -364,6 +373,61 @@ ipcMain.handle('workspace:read-file', async (_event, filePath: string) => {
       ok: false,
       error: error instanceof Error ? error.message : '读取文件失败。',
     }
+  }
+})
+
+ipcMain.handle('workspace:reveal-item', async (_event, itemPath: string) => {
+  try {
+    const { absolutePath } = resolveWorkspaceItemPath(itemPath)
+    const windowsPath = await revealInExplorer(absolutePath)
+    return { ok: true, windowsPath }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Failed to reveal workspace item.' }
+  }
+})
+
+ipcMain.handle('workspace:open-item', async (_event, itemPath: string) => {
+  try {
+    const { absolutePath } = resolveWorkspaceItemPath(itemPath)
+    const windowsPath = await openPathWithDefaultApp(absolutePath)
+    return { ok: true, windowsPath }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Failed to open workspace item.' }
+  }
+})
+
+ipcMain.handle('workspace:get-item-paths', async (_event, itemPath: string) => {
+  try {
+    const { absolutePath, relativePath } = resolveWorkspaceItemPath(itemPath)
+    return {
+      ok: true,
+      path: absolutePath,
+      relativePath,
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Failed to resolve workspace item path.' }
+  }
+})
+
+ipcMain.handle('workspace:rename-item', async (_event, itemPath: string, nextName: string) => {
+  try {
+    const { absolutePath, relativePath } = resolveWorkspaceItemPath(itemPath)
+    const safeName = normalizeRenameTarget(nextName)
+    const nextRelativePath = path.join(path.dirname(relativePath), safeName)
+    const nextAbsolutePath = path.resolve(workspaceRoot, nextRelativePath)
+
+    if (!isPathInside(workspaceRoot, nextAbsolutePath)) {
+      return { ok: false, error: 'Cannot rename workspace item outside the workspace.' }
+    }
+
+    await rename(absolutePath, nextAbsolutePath)
+    return {
+      ok: true,
+      path: nextRelativePath.replace(/\\/g, '/'),
+      snapshot: await createWorkspaceSnapshot(),
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Failed to rename workspace item.' }
   }
 })
 
@@ -889,6 +953,33 @@ async function listHermesWorktrees(hostPath: string): Promise<HermesWorktreeInfo
 function isNotGitRepositoryError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes('not a git repository')
+}
+
+function resolveWorkspaceItemPath(itemPath: string) {
+  const normalized = path.normalize(itemPath || '')
+  const absolutePath = path.resolve(workspaceRoot, normalized)
+
+  if (!isPathInside(workspaceRoot, absolutePath)) {
+    throw new Error('Cannot access workspace item outside the workspace.')
+  }
+
+  return {
+    absolutePath,
+    relativePath: normalized === '.' ? '' : normalized,
+  }
+}
+
+function normalizeRenameTarget(nextName: string) {
+  const safeName = nextName.trim()
+  if (!safeName) {
+    throw new Error('Name cannot be empty.')
+  }
+
+  if (safeName.includes('/') || safeName.includes('\\') || safeName === '.' || safeName === '..') {
+    throw new Error('Name must be a single file or directory name.')
+  }
+
+  return safeName
 }
 
 function normalizeWorktreeInfo(info: Partial<HermesWorktreeInfo>, currentWslPath: string): HermesWorktreeInfo {

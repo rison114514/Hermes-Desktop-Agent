@@ -35,7 +35,7 @@ export function SessionInfo() {
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const tasks = useWorkspaceStore((state) => state.tasks)
   const files = useWorkspaceStore((state) => state.files)
-  const resetForSession = useChatStore((state) => state.resetForSession)
+  const addSessionMarker = useChatStore((state) => state.addSessionMarker)
   const [status, setStatus] = useState<string | null>(null)
   const [sessions, setSessions] = useState<HermesSessionInfo[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
@@ -113,7 +113,7 @@ export function SessionInfo() {
     try {
       const snapshot = await window.hermesDesktop.loadHermesSession(selectedSession.sessionId, selectedSession.cwd)
       setSnapshot(snapshot)
-      resetForSession(`Loaded ACP session ${selectedSession.sessionId} in ${snapshot.cwd}.`)
+      addSessionMarker(`Loaded ACP session ${selectedSession.sessionId} in ${snapshot.cwd}.`)
       setStatus(`Loaded session ${selectedSession.sessionId.slice(0, 8)} and switched workspace.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to load session.')
@@ -135,7 +135,7 @@ export function SessionInfo() {
         directory: newWorktreeDirectory,
       })
       setSnapshot(result.snapshot)
-      resetForSession(`Started a new ACP session in worktree ${result.worktree.path}.`)
+      addSessionMarker(`Started a new ACP session in worktree ${result.worktree.path}.`)
       setNewWorktreeName('')
       setNewWorktreeDirectory('')
       await refreshWorktrees()
@@ -174,7 +174,7 @@ export function SessionInfo() {
     try {
       const snapshot = await window.hermesDesktop.switchHermesWorktree(selectedWorktree.path)
       setSnapshot(snapshot)
-      resetForSession(`Started a new ACP session in ${snapshot.cwd}.`)
+      addSessionMarker(`Started a new ACP session in ${snapshot.cwd}.`)
       await refreshSessions()
       await refreshWorktrees()
       setStatus(`Switched to ${selectedWorktree.name} and started a new session.`)
@@ -200,7 +200,7 @@ export function SessionInfo() {
 
       const snapshot = await window.hermesDesktop.switchWorkspaceRoot(selected.path)
       setSnapshot(snapshot)
-      resetForSession(`Started a new ACP session in workspace ${snapshot.cwd}.`)
+      addSessionMarker(`Started a new ACP session in workspace ${snapshot.cwd}.`)
       await refreshSessions()
       await refreshWorktrees()
       setStatus(`Switched workspace to ${snapshot.cwd}.`)

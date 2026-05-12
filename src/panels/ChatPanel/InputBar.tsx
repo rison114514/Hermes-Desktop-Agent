@@ -1,5 +1,5 @@
 import { ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, ClipboardPaste, Sparkles } from 'lucide-react'
+import { ArrowUp, ClipboardPaste, Sparkles, Square } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useSkillsStore } from '@/store/skills'
 import { cn } from '@/lib/utils'
@@ -44,6 +44,7 @@ export function InputBar() {
   const addMessage = useChatStore((state) => state.addMessage)
   const replaceMessage = useChatStore((state) => state.replaceMessage)
   const finalizeMessage = useChatStore((state) => state.finalizeMessage)
+  const activeAssistantId = useChatStore((state) => state.activeAssistantId)
   const setActiveAssistant = useChatStore((state) => state.setActiveAssistant)
   const setConnectionLabel = useChatStore((state) => state.setConnectionLabel)
   const skills = useSkillsStore((state) => state.skills)
@@ -182,6 +183,19 @@ export function InputBar() {
     }, 0)
   }
 
+  const handleCancel = async () => {
+    if (!window.hermesDesktop || !activeAssistantId) {
+      return
+    }
+
+    setConnectionLabel('Cancelling current Hermes turn')
+    try {
+      await window.hermesDesktop.cancelMessage()
+    } catch (error) {
+      setConnectionLabel(error instanceof Error ? error.message : 'Cancel failed')
+    }
+  }
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) {
       return
@@ -289,6 +303,16 @@ export function InputBar() {
         >
           <ArrowUp className="h-5 w-5" />
         </button>
+        {activeAssistantId ? (
+          <button
+            type="button"
+            onClick={() => void handleCancel()}
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-rose-300/25 bg-rose-300/10 text-rose-100 transition hover:bg-rose-300/18"
+            title="Cancel current turn"
+          >
+            <Square className="h-4 w-4 fill-current" />
+          </button>
+        ) : null}
       </div>
     </form>
   )

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Bot, Info, TriangleAlert, User2, Wrench, CheckCircle2 } from 'lucide-react'
+import katex from 'katex'
 import type { Message } from '@/store/chat'
 import { cn } from '@/lib/utils'
 
@@ -11,6 +12,7 @@ type MarkdownBlock =
   | { type: 'unordered-list'; items: string[] }
   | { type: 'ordered-list'; items: string[] }
   | { type: 'code'; language?: string; code: string }
+  | { type: 'math'; math: string; display: boolean }
 
 const KEYWORD_COLORS = {
   keyword: 'text-sky-300',
@@ -32,6 +34,29 @@ function parseMarkdown(content: string): MarkdownBlock[] {
 
     if (!line.trim()) {
       index += 1
+      continue
+    }
+
+    const trimmedLine = line.trim()
+    const inlineDisplayMath = trimmedLine.match(/^\$\$([\s\S]+)\$\$$/)
+    if (inlineDisplayMath) {
+      blocks.push({ type: 'math', math: inlineDisplayMath[1].trim(), display: true })
+      index += 1
+      continue
+    }
+
+    if (trimmedLine === '$$' || trimmedLine === '\\[') {
+      const endMarker = trimmedLine === '$$' ? '$$' : '\\]'
+      const mathLines: string[] = []
+      index += 1
+      while (index < lines.length && lines[index].trim() !== endMarker) {
+        mathLines.push(lines[index])
+        index += 1
+      }
+      if (index < lines.length) {
+        index += 1
+      }
+      blocks.push({ type: 'math', math: mathLines.join('\n').trim(), display: true })
       continue
     }
 
@@ -108,7 +133,7 @@ function parseMarkdown(content: string): MarkdownBlock[] {
 
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const parts: ReactNode[] = []
-  const pattern = /(\[[^\]]+\]\([^\)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g
+  const pattern = /(\\\([^\n]+?\\\)|\$[^$\n]+\$|\[[^\]]+\]\([^\)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
@@ -120,7 +145,11 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
     const token = match[0]
     const tokenKey = `${keyPrefix}-${match.index}`
 
-    if (token.startsWith('`') && token.endsWith('`')) {
+    if (token.startsWith('\\(') && token.endsWith('\\)')) {
+      parts.push(renderMath(token.slice(2, -2), false, tokenKey))
+    } else if (token.startsWith('$') && token.endsWith('$')) {
+      parts.push(renderMath(token.slice(1, -1), false, tokenKey))
+    } else if (token.startsWith('`') && token.endsWith('`')) {
       parts.push(
         <code key={tokenKey} className="rounded-md bg-black/25 px-1.5 py-0.5 font-mono text-[0.85em] text-inherit">
           {token.slice(1, -1)}
@@ -157,6 +186,23 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   }
 
   return parts
+}
+
+function renderMath(math: string, display: boolean, key: string) {
+  const html = katex.renderToString(math, {
+    displayMode: display,
+    throwOnError: false,
+    strict: false,
+  })
+
+  const Element = display ? 'div' : 'span'
+  return (
+    <Element
+      key={key}
+      className={display ? 'my-3 overflow-x-auto rounded-xl bg-slate-950/45 px-3 py-2 text-slate-100' : 'text-cyan-50'}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
 }
 
 function tokenizeCode(code: string, language?: string) {
@@ -294,6 +340,8 @@ function renderMarkdown(content: string) {
         )
       case 'code':
         return <div key={key}>{renderCodeBlock(block.code, block.language)}</div>
+      case 'math':
+        return renderMath(block.math, block.display, key)
       default:
         return null
     }

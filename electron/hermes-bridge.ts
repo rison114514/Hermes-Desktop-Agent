@@ -62,6 +62,7 @@ export class HermesBridge extends EventEmitter {
   private promptInFlight = false
   private workspacePath = process.cwd()
   private permissionHandler: HermesPermissionHandler | null = null
+  private promptCancelRequested = false
 
   getWorkspacePath() {
     return this.workspacePath
@@ -106,6 +107,7 @@ export class HermesBridge extends EventEmitter {
     }
 
     this.promptInFlight = true
+    this.promptCancelRequested = false
     this.emitEvent({
       type: 'status',
       payload: { stage: 'queued', detail: 'Message queued through ACP.' },
@@ -118,14 +120,46 @@ export class HermesBridge extends EventEmitter {
         prompt: [{ type: 'text', text: message }],
       }, 10 * 60 * 1000)
 
-      const stopReason = this.readString(result, 'stopReason') ?? this.readString(result, 'stop_reason') ?? 'end_turn'
-      this.emitEvent({
-        type: 'assistant:done',
-        payload: { reason: stopReason },
-      })
+      if (!this.promptCancelRequested) {
+        const stopReason = this.readString(result, 'stopReason') ?? this.readString(result, 'stop_reason') ?? 'end_turn'
+        this.emitEvent({
+          type: 'assistant:done',
+          payload: { reason: stopReason },
+        })
+      }
     } finally {
       this.promptInFlight = false
+      this.promptCancelRequested = false
     }
+  }
+
+  async cancelActivePrompt() {
+    if (!this.promptInFlight) {
+      return { ok: true, cancelled: false }
+    }
+
+    this.promptCancelRequested = true
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'cancelling', detail: 'Cancelling current Hermes turn.' },
+    })
+
+    if (this.process && this.sessionId) {
+      try {
+        await this.sendRequest('session/cancel', { sessionId: this.sessionId }, 5_000)
+      } catch {
+        this.stop()
+      }
+    } else {
+      this.stop()
+    }
+
+    this.emitEvent({
+      type: 'assistant:done',
+      payload: { reason: 'cancelled', text: '已终止本轮对话。' },
+    })
+
+    return { ok: true, cancelled: true }
   }
 
   async listSessions(): Promise<HermesSessionInfo[]> {

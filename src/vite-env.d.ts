@@ -39,6 +39,7 @@ declare global {
   interface Window {
     hermesDesktop: {
       sendMessage: (message: string) => Promise<{ ok: boolean }>
+      cancelMessage: () => Promise<{ ok: boolean; cancelled: boolean }>
       onHermesEvent: (listener: (event: HermesBridgeEvent) => void) => () => void
       listHermesSessions: () => Promise<Array<{
         sessionId: string
@@ -74,6 +75,20 @@ declare global {
         ok: boolean
         path?: string
         files?: DesktopWorkspaceFileNode[]
+        error?: string
+      }>
+      revealWorkspaceItem: (itemPath: string) => Promise<{ ok: boolean; windowsPath?: string; error?: string }>
+      openWorkspaceItem: (itemPath: string) => Promise<{ ok: boolean; windowsPath?: string; error?: string }>
+      getWorkspaceItemPaths: (itemPath: string) => Promise<{
+        ok: boolean
+        path?: string
+        relativePath?: string
+        error?: string
+      }>
+      renameWorkspaceItem: (itemPath: string, nextName: string) => Promise<{
+        ok: boolean
+        path?: string
+        snapshot?: DesktopWorkspaceSnapshot
         error?: string
       }>
       readWorkspaceFile: (filePath: string) => Promise<{

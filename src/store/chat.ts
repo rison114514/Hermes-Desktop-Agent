@@ -33,6 +33,7 @@ interface ChatStore {
   replaceMessage: (id: string, content: string) => void
   finalizeMessage: (id: string) => void
   setConnectionLabel: (label: string) => void
+  addSessionMarker: (label: string) => void
   resetForSession: (label: string) => void
 }
 
@@ -162,6 +163,25 @@ export const useChatStore = create<ChatStore>((set) => ({
       activeAssistantId: state.activeAssistantId === id ? null : state.activeAssistantId,
     })),
   setConnectionLabel: (label) => set({ connectionLabel: label }),
+  addSessionMarker: (label) =>
+    set((state) => ({
+      messages: [
+        ...state.messages.map((message) =>
+          message.streaming ? { ...message, streaming: false, label: undefined } : message,
+        ),
+        {
+          id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'system',
+          content: label,
+          tone: 'muted',
+          label: 'Session',
+          kind: 'text',
+        },
+      ],
+      draft: '',
+      activeAssistantId: null,
+      connectionLabel: 'Ready',
+    })),
   resetForSession: (label) =>
     set({
       messages: [
