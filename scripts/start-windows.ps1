@@ -38,9 +38,7 @@ function Invoke-Native {
 
   $psi = [System.Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $FilePath
-  foreach ($argument in $Arguments) {
-    [void]$psi.ArgumentList.Add($argument)
-  }
+  $psi.Arguments = Join-ProcessArguments $Arguments
   $psi.UseShellExecute = $false
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
@@ -57,6 +55,30 @@ function Invoke-Native {
     Stdout = $stdout
     Stderr = $stderr
   }
+}
+
+function Join-ProcessArguments {
+  param([string[]]$Arguments)
+
+  if (-not $Arguments) {
+    return ""
+  }
+
+  return ($Arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
+}
+
+function Quote-ProcessArgument {
+  param([string]$Argument)
+
+  if ($null -eq $Argument) {
+    return '""'
+  }
+
+  if ($Argument -notmatch '[\s"]') {
+    return $Argument
+  }
+
+  return '"' + ($Argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
 
 function Invoke-Step {
