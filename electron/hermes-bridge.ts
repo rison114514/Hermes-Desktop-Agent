@@ -50,6 +50,7 @@ type PendingRequest = {
 }
 
 const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
+const HERMES_DIAGNOSTIC_PREVIEW_CHARS = 20_000
 
 export class HermesBridge extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | null = null
@@ -192,6 +193,11 @@ export class HermesBridge extends EventEmitter {
     if (result === null || result === undefined) {
       throw new Error(`Hermes could not load session ${sessionId}.`)
     }
+
+    this.emitEvent({
+      type: 'raw',
+      payload: createDiagnosticPayload('session/load', result, { sessionId }),
+    })
 
     this.sessionId = sessionId
     this.activeMessageIds.clear()
@@ -620,7 +626,10 @@ export class HermesBridge extends EventEmitter {
       return
     }
 
-    this.emitEvent({ type: 'raw', payload })
+    this.emitEvent({
+      type: 'raw',
+      payload: createDiagnosticPayload('session/update', payload, { kind: kind ?? 'unknown' }),
+    })
   }
 
   private readSessionPage(payload: unknown) {
@@ -775,6 +784,51 @@ function createCommandInfo(name: string, description: string): HermesCommandInfo
 
 function readStringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function createDiagnosticPayload(source: string, payload: unknown, extra?: Record<string, unknown>) {
+  return {
+    source,
+    ...extra,
+    shape: describePayloadShape(payload),
+    preview: stringifyPreview(payload),
+  }
+}
+
+function describePayloadShape(payload: unknown): unknown {
+  if (Array.isArray(payload)) {
+    return {
+      type: 'array',
+      length: payload.length,
+      itemShapes: payload.slice(0, 5).map((item) => describePayloadShape(item)),
+    }
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return { type: typeof payload }
+  }
+
+  const record = payload as Record<string, unknown>
+  return {
+    type: 'object',
+    keys: Object.keys(record),
+    children: Object.fromEntries(
+      Object.entries(record)
+        .slice(0, 20)
+        .map(([key, value]) => [key, Array.isArray(value)
+          ? { type: 'array', length: value.length }
+          : value && typeof value === 'object'
+            ? { type: 'object', keys: Object.keys(value as Record<string, unknown>) }
+            : { type: typeof value }]),
+    ),
+  }
+}
+
+function stringifyPreview(payload: unknown) {
+  const text = stringifyMaybe(payload) ?? String(payload)
+  return text.length > HERMES_DIAGNOSTIC_PREVIEW_CHARS
+    ? `${text.slice(0, HERMES_DIAGNOSTIC_PREVIEW_CHARS)}\n...[truncated ${text.length - HERMES_DIAGNOSTIC_PREVIEW_CHARS} chars]`
+    : text
 }
 
 function stringifyMaybe(value: unknown): string | undefined {
