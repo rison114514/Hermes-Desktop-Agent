@@ -353,6 +353,35 @@ export function SessionInfo() {
         </div>
 
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
+              <Terminal className="h-3 w-3" /> Workspace
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleRefreshWorkspace()}
+                disabled={sessionLoading}
+                className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-200 transition enabled:hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-600"
+                title="Refresh workspace"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${sessionLoading ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSwitchWorkspace()}
+                disabled={sessionLoading}
+                className="flex items-center gap-1 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1.5 text-[11px] text-cyan-100 transition enabled:hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                Change
+              </button>
+            </div>
+          </div>
+          <p className="break-all text-xs leading-5">{cwd}</p>
+        </div>
+
+        <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
           <div className="mb-3 flex items-center justify-between gap-2">
             <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Worktree</p>
             <button
@@ -454,35 +483,6 @@ export function SessionInfo() {
           <p className="mt-2 rounded-full border border-cyan-300/15 bg-cyan-300/8 px-2 py-1 text-[11px] text-cyan-100">
             {windows.workspaceMode ?? 'windows-workspace'}
           </p>
-        </div>
-
-        <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
-              <Terminal className="h-3 w-3" /> Workspace
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void handleRefreshWorkspace()}
-                disabled={sessionLoading}
-                className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-200 transition enabled:hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-600"
-                title="Refresh workspace"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${sessionLoading ? 'animate-spin' : ''}`} />
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleSwitchWorkspace()}
-                disabled={sessionLoading}
-                className="flex items-center gap-1 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1.5 text-[11px] text-cyan-100 transition enabled:hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
-              >
-                <FolderOpen className="h-3.5 w-3.5" />
-                Change
-              </button>
-            </div>
-          </div>
-          <p className="break-all text-xs leading-5">{cwd}</p>
         </div>
 
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
