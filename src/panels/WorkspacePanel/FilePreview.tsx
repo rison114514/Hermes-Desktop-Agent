@@ -1,5 +1,6 @@
 import { FileText, LoaderCircle } from 'lucide-react'
 import { useWorkspaceStore } from '@/store/workspace'
+import { CollapsibleSection } from './CollapsibleSection'
 
 export function FilePreview() {
   const preview = useWorkspaceStore((state) => state.preview)
@@ -7,12 +8,7 @@ export function FilePreview() {
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
 
   return (
-    <section className="rounded-[28px] border border-white/10 bg-white/5 p-4">
-      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-white">
-        <FileText className="h-4 w-4 text-cyan-200" />
-        文件预览
-      </div>
-
+    <CollapsibleSection title="Preview" icon={<FileText className="h-4 w-4 text-cyan-200" />}>
       {previewLoading ? (
         <div className="flex items-center gap-2 rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-4 text-sm text-slate-300">
           <LoaderCircle className="h-4 w-4 animate-spin text-cyan-200" />
@@ -40,6 +36,6 @@ export function FilePreview() {
           {selectedFilePath ? '当前文件暂无可预览内容。' : '点击左侧文件树中的文件后，可在这里查看内容预览。'}
         </div>
       )}
-    </section>
+    </CollapsibleSection>
   )
 }

@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Bot, Info, TriangleAlert, User2, Wrench, CheckCircle2 } from 'lucide-react'
+import { Bot, Info, TriangleAlert, User2, Wrench, CheckCircle2, ChevronDown } from 'lucide-react'
 import katex from 'katex'
-import type { Message } from '@/store/chat'
+import type { Message, ToolCallState } from '@/store/chat'
 import { cn } from '@/lib/utils'
 
 type MarkdownBlock =
@@ -383,6 +383,72 @@ function ToolCard({ message }: { message: Message }) {
   )
 }
 
+function InlineToolCard({ tool, compact = false }: { tool: ToolCallState; compact?: boolean }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Wrench className="h-4 w-4 shrink-0 text-cyan-200" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-white">{tool.toolName}</p>
+            <p className="truncate text-xs text-slate-400">{tool.callId ?? 'tool call'}</p>
+          </div>
+        </div>
+        <div className={cn('shrink-0 rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.18em]', tool.status === 'completed' ? 'bg-emerald-300/15 text-emerald-100' : 'bg-amber-300/15 text-amber-100')}>
+          {tool.status === 'completed' ? (
+            <span className="inline-flex items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5" />Done</span>
+          ) : (
+            'Running'
+          )}
+        </div>
+      </div>
+      {!compact && tool.args ? renderCodeBlock(tool.args, 'json') : null}
+      {!compact && tool.result ? (
+        <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200">
+          <p className="mb-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">Tool output</p>
+          <div className="space-y-3">{renderMarkdown(tool.result)}</div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ToolCallShelf({ message }: { message: Message }) {
+  const attachedTools = message.kind === 'tool' && message.tool ? [message.tool] : message.tools ?? []
+  if (attachedTools.length === 0) {
+    return null
+  }
+
+  const sortedTools = [...attachedTools].sort((left, right) => (left.updatedAt ?? 0) - (right.updatedAt ?? 0))
+  const latestTool = sortedTools[sortedTools.length - 1]
+
+  if (message.streaming) {
+    return (
+      <div className="mt-4 border-t border-white/10 pt-3">
+        <p className="mb-2 text-[11px] uppercase tracking-[0.2em] text-slate-500">Latest tool call</p>
+        <InlineToolCard tool={latestTool} compact />
+      </div>
+    )
+  }
+
+  return (
+    <details className="group mt-4 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/45">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs text-slate-300 transition hover:bg-white/5">
+        <span className="inline-flex items-center gap-2">
+          <Wrench className="h-3.5 w-3.5 text-cyan-200" />
+          Tool calls ({sortedTools.length})
+        </span>
+        <ChevronDown className="h-4 w-4 text-slate-500 transition group-open:rotate-180" />
+      </summary>
+      <div className="space-y-3 border-t border-white/10 p-3">
+        {sortedTools.map((tool, index) => (
+          <InlineToolCard key={tool.callId ?? `${tool.toolName}-${index}`} tool={tool} />
+        ))}
+      </div>
+    </details>
+  )
+}
+
 export function MessageBubble({ message }: { message: Message }) {
   const isAssistant = message.role === 'assistant'
   const isSystem = message.role === 'system'
@@ -427,7 +493,14 @@ export function MessageBubble({ message }: { message: Message }) {
           {badge}
           {message.streaming ? <span className="text-cyan-200">输出中</span> : null}
         </div>
-        {message.kind === 'tool' ? <ToolCard message={message} /> : <div className="space-y-3">{renderMarkdown(message.content)}</div>}
+        {message.kind === 'tool' ? (
+          <ToolCard message={message} />
+        ) : (
+          <div className="space-y-3">
+            {renderMarkdown(message.content)}
+            <ToolCallShelf message={message} />
+          </div>
+        )}
       </div>
 
       {!isAssistant && !isSystem && (

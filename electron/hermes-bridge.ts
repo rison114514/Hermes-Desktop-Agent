@@ -6,6 +6,7 @@ import { createUtf8ProcessEnv, windowsPathToWslPath } from './wsl-paths.js'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
+  | { type: 'user:message'; payload: { id?: string; text: string; replay?: boolean } }
   | { type: 'assistant:start'; payload: { id?: string; model?: string } }
   | { type: 'assistant:delta'; payload: { id?: string; delta: string } }
   | { type: 'assistant:done'; payload: { id?: string; reason?: string; text?: string } }
@@ -49,6 +50,10 @@ type PendingRequest = {
   timeout: NodeJS.Timeout
 }
 
+type HistoryTurn =
+  | { role: 'user'; id: string; text: string }
+  | { role: 'assistant'; id: string; text: string; tools: Array<HermesBridgeEvent & { type: 'tool' }> }
+
 const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
 const HERMES_DIAGNOSTIC_PREVIEW_CHARS = 20_000
 
@@ -61,6 +66,10 @@ export class HermesBridge extends EventEmitter {
   private startPromise: Promise<void> | null = null
   private activeMessageIds = new Set<string>()
   private promptInFlight = false
+  private loadingSessionHistory = false
+  private historyTurns: HistoryTurn[] = []
+  private historyTurnCounter = 0
+  private historyFlushTimer: NodeJS.Timeout | null = null
   private workspacePath = process.cwd()
   private permissionHandler: HermesPermissionHandler | null = null
   private promptCancelRequested = false
@@ -184,7 +193,12 @@ export class HermesBridge extends EventEmitter {
     await this.ensureBackend()
 
     const cwd = windowsPathToWslPath(this.workspacePath)
-    const result = await this.sendRequest('session/load', {
+    this.clearHistoryReplay()
+    this.loadingSessionHistory = true
+    this.historyTurns = []
+    this.historyTurnCounter = 0
+    let result: unknown
+    result = await this.sendRequest('session/load', {
       cwd,
       sessionId,
       mcpServers: [],
@@ -201,10 +215,7 @@ export class HermesBridge extends EventEmitter {
 
     this.sessionId = sessionId
     this.activeMessageIds.clear()
-    this.emitEvent({
-      type: 'status',
-      payload: { stage: 'ready', detail: `Loaded Hermes ACP session ${sessionId}` },
-    })
+    this.scheduleHistoryFlush(600)
   }
 
   async startNewSession(workspacePath?: string) {
@@ -219,6 +230,7 @@ export class HermesBridge extends EventEmitter {
   }
 
   stop() {
+    this.clearHistoryReplay()
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeout)
       pending.reject(new Error('Hermes ACP backend stopped.'))
@@ -563,10 +575,34 @@ export class HermesBridge extends EventEmitter {
     const updateRecord = update as Record<string, unknown>
     const kind = this.readString(updateRecord, 'sessionUpdate') ?? this.readString(updateRecord, 'session_update')
 
+    if (kind === 'user_message_chunk') {
+      const messageId = this.readString(updateRecord, 'messageId') ?? this.readString(updateRecord, 'message_id') ?? undefined
+      const text = normalizeMaybeText(extractAcpText(updateRecord.content) ?? undefined, 'assistant')
+      if (text) {
+        if (this.loadingSessionHistory) {
+          this.pushHistoryUserTurn(messageId, text)
+          this.scheduleHistoryFlush()
+          return
+        }
+
+        this.emitEvent({
+          type: 'user:message',
+          payload: { id: messageId, text },
+        })
+      }
+      return
+    }
+
     if (kind === 'agent_message_chunk') {
       const messageId = this.readString(updateRecord, 'messageId') ?? this.readString(updateRecord, 'message_id') ?? undefined
       const delta = normalizeMaybeText(extractAcpText(updateRecord.content) ?? undefined, 'assistant')
       if (!delta) {
+        return
+      }
+
+      if (this.loadingSessionHistory) {
+        this.pushHistoryAssistantChunk(messageId, delta)
+        this.scheduleHistoryFlush()
         return
       }
 
@@ -591,7 +627,7 @@ export class HermesBridge extends EventEmitter {
     }
 
     if (kind === 'tool_call') {
-      this.emitEvent({
+      const event: HermesBridgeEvent = {
         type: 'tool',
         payload: {
           id: this.readString(updateRecord, 'toolCallId') ?? this.readString(updateRecord, 'tool_call_id') ?? undefined,
@@ -599,12 +635,19 @@ export class HermesBridge extends EventEmitter {
           args: normalizeMaybeText(stringifyMaybe(updateRecord.rawInput), 'tool-args'),
           status: 'running',
         },
-      })
+      }
+      if (this.loadingSessionHistory) {
+        this.pushHistoryTool(event)
+        this.scheduleHistoryFlush()
+        return
+      }
+
+      this.emitEvent(event)
       return
     }
 
     if (kind === 'tool_call_update') {
-      this.emitEvent({
+      const event: HermesBridgeEvent = {
         type: 'tool',
         payload: {
           id: this.readString(updateRecord, 'toolCallId') ?? this.readString(updateRecord, 'tool_call_id') ?? undefined,
@@ -613,7 +656,14 @@ export class HermesBridge extends EventEmitter {
           result: normalizeMaybeText(stringifyMaybe(updateRecord.rawOutput) ?? extractToolContent(updateRecord.content), 'tool-result'),
           status: 'completed',
         },
-      })
+      }
+      if (this.loadingSessionHistory) {
+        this.pushHistoryTool(event)
+        this.scheduleHistoryFlush()
+        return
+      }
+
+      this.emitEvent(event)
       return
     }
 
@@ -660,6 +710,112 @@ export class HermesBridge extends EventEmitter {
     return {
       sessions,
       nextCursor: this.readString(record, 'nextCursor') ?? this.readString(record, 'next_cursor'),
+    }
+  }
+
+  private clearHistoryReplay() {
+    if (this.historyFlushTimer) {
+      clearTimeout(this.historyFlushTimer)
+      this.historyFlushTimer = null
+    }
+    this.loadingSessionHistory = false
+    this.historyTurns = []
+  }
+
+  private scheduleHistoryFlush(delayMs = 350) {
+    if (this.historyFlushTimer) {
+      clearTimeout(this.historyFlushTimer)
+    }
+
+    this.historyFlushTimer = setTimeout(() => {
+      this.historyFlushTimer = null
+      this.flushHistoryTurns()
+    }, delayMs)
+  }
+
+  private createHistoryId(prefix: string, candidate?: string) {
+    return candidate ?? `history-${prefix}-${++this.historyTurnCounter}`
+  }
+
+  private pushHistoryUserTurn(candidateId: string | undefined, text: string) {
+    const last = this.historyTurns.at(-1)
+    if (last?.role === 'user' && last.id === candidateId) {
+      last.text += text
+      return
+    }
+
+    this.historyTurns.push({
+      role: 'user',
+      id: this.createHistoryId('user', candidateId),
+      text,
+    })
+  }
+
+  private pushHistoryAssistantChunk(candidateId: string | undefined, text: string) {
+    const last = this.historyTurns.at(-1)
+    if (last?.role === 'assistant' && (!candidateId || last.id === candidateId)) {
+      last.text += text
+      return
+    }
+
+    this.historyTurns.push({
+      role: 'assistant',
+      id: this.createHistoryId('assistant', candidateId),
+      text,
+      tools: [],
+    })
+  }
+
+  private pushHistoryTool(event: HermesBridgeEvent & { type: 'tool' }) {
+    const last = this.historyTurns.at(-1)
+    if (last?.role === 'assistant') {
+      last.tools.push(event)
+      return
+    }
+
+    this.historyTurns.push({
+      role: 'assistant',
+      id: this.createHistoryId('assistant'),
+      text: '',
+      tools: [event],
+    })
+  }
+
+  private flushHistoryTurns() {
+    const turns = this.historyTurns
+    this.historyTurns = []
+    this.loadingSessionHistory = false
+
+    for (const turn of turns) {
+      if (turn.role === 'user') {
+        this.emitEvent({
+          type: 'user:message',
+          payload: { id: turn.id, text: turn.text, replay: true },
+        })
+        continue
+      }
+
+      this.emitEvent({ type: 'assistant:start', payload: { id: turn.id } })
+      if (turn.text) {
+        this.emitEvent({
+          type: 'assistant:delta',
+          payload: { id: turn.id, delta: turn.text },
+        })
+      }
+      for (const tool of turn.tools) {
+        this.emitEvent(tool)
+      }
+      this.emitEvent({
+        type: 'assistant:done',
+        payload: { id: turn.id, reason: 'history_replay' },
+      })
+    }
+
+    if (this.sessionId) {
+      this.emitEvent({
+        type: 'status',
+        payload: { stage: 'ready', detail: `Loaded Hermes ACP session ${this.sessionId}` },
+      })
     }
   }
 

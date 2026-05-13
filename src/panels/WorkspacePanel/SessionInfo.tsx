@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
+import { CollapsibleSection } from './CollapsibleSection'
 
 type HermesSessionInfo = {
   sessionId: string
@@ -36,6 +37,7 @@ export function SessionInfo() {
   const tasks = useWorkspaceStore((state) => state.tasks)
   const files = useWorkspaceStore((state) => state.files)
   const addSessionMarker = useChatStore((state) => state.addSessionMarker)
+  const resetForSession = useChatStore((state) => state.resetForSession)
   const [status, setStatus] = useState<string | null>(null)
   const [sessions, setSessions] = useState<HermesSessionInfo[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
@@ -111,9 +113,9 @@ export function SessionInfo() {
 
     setSessionLoading(true)
     try {
+      resetForSession(`Loading ACP session ${selectedSession.sessionId}...`)
       const snapshot = await window.hermesDesktop.loadHermesSession(selectedSession.sessionId, selectedSession.cwd)
       setSnapshot(snapshot)
-      addSessionMarker(`Loaded ACP session ${selectedSession.sessionId} in ${snapshot.cwd}.`)
       setStatus(`Loaded session ${selectedSession.sessionId.slice(0, 8)} and switched workspace.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to load session.')
@@ -290,11 +292,11 @@ export function SessionInfo() {
   }
 
   return (
-    <section className="rounded-[28px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-      <div className="mb-4 flex items-center gap-2 font-semibold text-white">
-        <Cable className="h-4 w-4 text-cyan-200" />
-        Session
-      </div>
+    <CollapsibleSection
+      title="Session"
+      icon={<Cable className="h-4 w-4 text-cyan-200" />}
+      className="text-sm text-slate-300"
+    >
 
       <div className="space-y-3">
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
@@ -546,6 +548,6 @@ export function SessionInfo() {
           {status ? <p className="mt-2 text-[11px] leading-5 text-slate-400">{status}</p> : null}
         </div>
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }

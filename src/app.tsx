@@ -91,6 +91,21 @@ export default function App() {
     }
 
     return window.hermesDesktop.onHermesEvent((event) => {
+      if (event.type === 'user:message') {
+        const currentAssistantId = useChatStore.getState().activeAssistantId
+        if (event.payload.replay && currentAssistantId) {
+          finalizeMessage(currentAssistantId)
+          setActiveAssistant(null)
+        }
+        addMessage({
+          id: event.payload.id ?? `history-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'user',
+          content: event.payload.text,
+        })
+        setConnectionLabel(event.payload.replay ? 'Loaded historical user message' : 'User message received')
+        return
+      }
+
       if (event.type === 'assistant:start') {
         touchAssistantMessage(event.payload.id ?? null)
         setConnectionLabel(event.payload.model ? `正在通过 ${event.payload.model} 响应` : 'Hermes 正在响应')
@@ -128,6 +143,7 @@ export default function App() {
           args: event.payload.args,
           result: event.payload.result,
           status: event.payload.status,
+          updatedAt: Date.now(),
         })
         setConnectionLabel(event.payload.status === 'completed' ? `工具 ${event.payload.name} 已完成` : `正在调用工具 ${event.payload.name}`)
         return
@@ -139,6 +155,11 @@ export default function App() {
       }
 
       if (event.type === 'status') {
+        const currentAssistantId = useChatStore.getState().activeAssistantId
+        if (event.payload.stage === 'ready' && event.payload.detail.startsWith('Loaded Hermes ACP session') && currentAssistantId) {
+          finalizeMessage(currentAssistantId)
+          setActiveAssistant(null)
+        }
         setConnectionLabel(event.payload.detail)
         return
       }
@@ -168,13 +189,7 @@ export default function App() {
         return
       }
 
-      addMessage({
-        id: `raw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        role: 'system',
-        content: JSON.stringify(event.payload, null, 2),
-        tone: 'muted',
-        label: '原始事件',
-      })
+      console.debug('[Hermes raw event]', event.payload)
     })
   }, [
     addMessage,

@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { LayoutPanelTop, RefreshCw } from 'lucide-react'
 import { FilePreview } from './FilePreview'
 import { FileTree } from './FileTree'
-import { TaskList } from './TaskList'
 import { SessionInfo } from './SessionInfo'
 import { useWorkspaceStore } from '@/store/workspace'
 
@@ -55,7 +54,6 @@ export function WorkspacePanel() {
       <div className="space-y-4 overflow-y-auto pr-1">
         <FileTree />
         <FilePreview />
-        <TaskList />
         <SessionInfo />
       </div>
     </aside>

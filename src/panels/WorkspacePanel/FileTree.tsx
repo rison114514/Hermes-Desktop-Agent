@@ -3,6 +3,7 @@ import { ChevronRight, Copy, ExternalLink, FileCode2, FolderOpen, FolderTree, Lo
 import type { WorkspaceFileNode } from '@/store/workspace'
 import { useWorkspaceStore } from '@/store/workspace'
 import { cn } from '@/lib/utils'
+import { CollapsibleSection } from './CollapsibleSection'
 
 type ContextMenuState = {
   node: WorkspaceFileNode
@@ -177,11 +178,7 @@ export function FileTree() {
   }
 
   return (
-    <section className="relative rounded-[28px] border border-white/10 bg-white/5 p-4">
-      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-white">
-        <FolderTree className="h-4 w-4 text-cyan-200" />
-        文件结构
-      </div>
+    <CollapsibleSection title="Files" icon={<FolderTree className="h-4 w-4 text-cyan-200" />} className="relative">
       <div className="space-y-2">
         {files.length ? (
           files.map((file) => <TreeNode key={file.path} node={file} onContextMenu={openContextMenu} />)
@@ -241,7 +238,7 @@ export function FileTree() {
           />
         </div>
       ) : null}
-    </section>
+    </CollapsibleSection>
   )
 }
 
