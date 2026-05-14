@@ -106,6 +106,11 @@ function Get-WindowsOptionalFeatureState {
 }
 
 function Enable-WslPlatformFeaturesIfNeeded {
+  $virtualMachinePlatformState = Get-WindowsOptionalFeatureState "VirtualMachinePlatform"
+  if ($virtualMachinePlatformState -ne "Enabled") {
+    Enable-HyperVPackagesIfAvailable
+  }
+
   $features = @(
     [pscustomobject]@{
       Name = "Microsoft-Windows-Subsystem-Linux"
@@ -161,6 +166,53 @@ Required features:
   return $true
 }
 
+function Enable-HyperVPackagesIfAvailable {
+  if (-not (Test-Administrator)) {
+    return
+  }
+
+  $hyperVState = Get-WindowsOptionalFeatureState "Microsoft-Hyper-V-All"
+  if ($hyperVState -eq "Enabled") {
+    return
+  }
+
+  $packagesDirectory = Join-Path $env:SystemRoot "servicing\Packages"
+  $packages = @(Get-ChildItem -Path $packagesDirectory -Filter "*Hyper-V*.mum" -ErrorAction SilentlyContinue)
+  if (-not $packages) {
+    Write-Host "Hyper-V package manifests were not found. Continuing with standard WSL feature enablement." -ForegroundColor Yellow
+    return
+  }
+
+  Write-Host "Preparing Hyper-V platform packages for Windows Home compatibility..." -ForegroundColor Yellow
+  foreach ($package in $packages) {
+    $result = Invoke-Native "dism.exe" @(
+      "/online",
+      "/norestart",
+      "/add-package:$($package.FullName)"
+    )
+
+    if ($result.ExitCode -ne 0) {
+      $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
+      Write-Host "Skipping Hyper-V package $($package.Name). $message" -ForegroundColor Yellow
+    }
+  }
+
+  Write-Host "Enabling Hyper-V platform feature..." -ForegroundColor Yellow
+  $enable = Invoke-Native "dism.exe" @(
+    "/online",
+    "/enable-feature",
+    "/featurename:Microsoft-Hyper-V-All",
+    "/LimitAccess",
+    "/ALL",
+    "/norestart"
+  )
+
+  if ($enable.ExitCode -ne 0) {
+    $message = if ($enable.Stderr) { $enable.Stderr } else { $enable.Stdout }
+    Write-Host "Hyper-V platform feature could not be fully enabled. Continuing with Virtual Machine Platform. $message" -ForegroundColor Yellow
+  }
+}
+
 function Invoke-WslListVerbose {
   Invoke-Native "wsl.exe" @("-l", "-v") ([System.Text.Encoding]::Unicode)
 }
@@ -168,6 +220,11 @@ function Invoke-WslListVerbose {
 function Test-SystemWslDistro {
   param([string]$Name)
   return $Name -match '^docker-desktop(?:-data)?$'
+}
+
+function Test-UbuntuWslDistro {
+  param([string]$Name)
+  return $Name -match '^Ubuntu(?:[\s-]|$)' -or $Name -match '^HermesUbuntu$'
 }
 
 function Get-UsableWslDistro {
@@ -207,6 +264,44 @@ function Get-UsableWslDistro {
   }
 
   return ($usable | Select-Object -First 1).Name
+}
+
+function Get-UsableUbuntuWslDistro {
+  $result = Invoke-WslListVerbose
+  if ($result.ExitCode -ne 0) {
+    return $null
+  }
+
+  $lines = $result.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").TrimEnd() }
+  $rows = foreach ($line in $lines) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed -match '^NAME\s+STATE\s+VERSION$') {
+      continue
+    }
+
+    $isDefault = $trimmed.StartsWith("*")
+    $clean = $trimmed -replace '^\*\s*', ''
+    $match = [regex]::Match($clean, '^(?<name>.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting|Exporting|Importing)\s+\d+\s*$')
+    $name = if ($match.Success) { $match.Groups["name"].Value.Trim() } else { ($clean -split "\s{2,}")[0].Trim() }
+    if ($name -and -not (Test-SystemWslDistro $name) -and (Test-UbuntuWslDistro $name)) {
+      [pscustomobject]@{
+        Name = $name
+        Default = $isDefault
+      }
+    }
+  }
+
+  $ubuntu = @($rows)
+  if (-not $ubuntu) {
+    return $null
+  }
+
+  $defaultUbuntu = $ubuntu | Where-Object { $_.Default } | Select-Object -First 1
+  if ($defaultUbuntu) {
+    return $defaultUbuntu.Name
+  }
+
+  return ($ubuntu | Select-Object -First 1).Name
 }
 
 function Test-WslDistroExists {
@@ -352,21 +447,24 @@ Manual fallback:
 }
 
 function Ensure-WslReady {
-  Require-Command "wsl.exe" "Install WSL from Microsoft Store or run 'wsl --install -d Ubuntu' in an elevated PowerShell."
+  Require-Command "wsl.exe" "Enable WSL, install Ubuntu from Microsoft Store, launch Ubuntu once, then run this setup again."
 
   $status = Invoke-Native "wsl.exe" @("--status")
   if ($status.ExitCode -ne 0) {
-    Install-WslDefaultDistro
+    throw @"
+WSL is not ready yet.
+Install Ubuntu from Microsoft Store after Windows restart, launch Ubuntu once to finish first-time setup, then run this setup again.
+If Microsoft Store download fails, close proxy/VPN and retry.
+"@
   }
 
-  $detected = Get-UsableWslDistro
+  $detected = Get-UsableUbuntuWslDistro
   if (-not $detected) {
-    Install-WslDefaultDistro
-    $detected = Get-UsableWslDistro
-  }
-
-  if (-not $detected) {
-    throw "No usable WSL distro is ready yet. Finish Ubuntu first-run setup, then run this setup again."
+    throw @"
+No usable Ubuntu WSL distro was found.
+Please install Ubuntu from Microsoft Store, close proxy/VPN if Store download returns 403, launch Ubuntu once to finish first-time setup, then run this setup again.
+Docker Desktop distros are not supported.
+"@
   }
 
   return $detected
