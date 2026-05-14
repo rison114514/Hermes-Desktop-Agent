@@ -195,7 +195,19 @@ function Install-WslDefaultDistro {
   }
   if ($result.ExitCode -ne 0) {
     $message = if (-not [string]::IsNullOrWhiteSpace($result.Stderr)) { $result.Stderr } else { $result.Stdout }
-    throw "Automatic WSL installation did not complete. Run 'wsl --install -d Ubuntu' from an elevated PowerShell, restart Windows if prompted, then launch this script again. $message"
+    Write-Host "WSL Store installation did not complete. Trying web download fallback..." -ForegroundColor Yellow
+    if (-not [string]::IsNullOrWhiteSpace($message)) {
+      Write-Host $message.Trim() -ForegroundColor Yellow
+    }
+
+    $webResult = Invoke-Native "wsl.exe" @("--install", "--web-download", "-d", "Ubuntu")
+    if (-not [string]::IsNullOrWhiteSpace($webResult.Stdout)) {
+      Write-Host $webResult.Stdout.Trim()
+    }
+    if ($webResult.ExitCode -ne 0) {
+      $webMessage = if (-not [string]::IsNullOrWhiteSpace($webResult.Stderr)) { $webResult.Stderr } else { $webResult.Stdout }
+      throw "Automatic WSL installation did not complete. Run 'wsl --install --web-download -d Ubuntu' from an elevated PowerShell, restart Windows if prompted, then launch this script again. $webMessage"
+    }
   }
 
   Write-Host "WSL installation command completed. If Windows asks for a reboot, restart and run this launcher again." -ForegroundColor Yellow

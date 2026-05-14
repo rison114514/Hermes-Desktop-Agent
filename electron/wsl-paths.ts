@@ -125,11 +125,28 @@ async function detectUsableWslDistro() {
 }
 
 async function installDefaultWslDistro() {
+  const standardInstall = await tryWslInstall(['--install', '-d', DEFAULT_INSTALL_DISTRO])
+  if (standardInstall.ok) {
+    return
+  }
+
+  const webInstall = await tryWslInstall(['--install', '--web-download', '-d', DEFAULT_INSTALL_DISTRO])
+  if (webInstall.ok) {
+    return
+  }
+
+  throw new Error(`No usable WSL distro was found. Docker Desktop's internal distro cannot run Hermes. Tried to install ${DEFAULT_INSTALL_DISTRO}, but it did not complete. Run 'wsl --install --web-download -d ${DEFAULT_INSTALL_DISTRO}' from an elevated PowerShell, restart Windows if prompted, then launch Hermes Desktop Agent again. Store install error: ${standardInstall.error}. Web download error: ${webInstall.error}`)
+}
+
+async function tryWslInstall(args: string[]) {
   try {
-    await execFileAsync('wsl.exe', ['--install', '-d', DEFAULT_INSTALL_DISTRO], 'utf8')
+    await execFileAsync('wsl.exe', args, 'utf16le')
+    return { ok: true as const }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`No usable WSL distro was found. Docker Desktop's internal distro cannot run Hermes. Tried to install ${DEFAULT_INSTALL_DISTRO}, but it did not complete. Run 'wsl --install -d ${DEFAULT_INSTALL_DISTRO}' from an elevated PowerShell, restart Windows if prompted, then launch Hermes Desktop Agent again. ${detail}`)
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error),
+    }
   }
 }
 
