@@ -15,6 +15,7 @@ const api = {
   },
   listHermesSessions: () => ipcRenderer.invoke('hermes:list-sessions'),
   loadHermesSession: (sessionId: string, cwd: string) => ipcRenderer.invoke('hermes:load-session', sessionId, cwd),
+  newHermesSession: () => ipcRenderer.invoke('hermes:new-session'),
   createHermesWorktree: (options?: { name?: string; directory?: string }) =>
     ipcRenderer.invoke('workspace:create-worktree', options),
   listHermesWorktrees: () => ipcRenderer.invoke('workspace:list-worktrees'),

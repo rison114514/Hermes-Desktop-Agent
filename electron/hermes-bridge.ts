@@ -218,11 +218,16 @@ export class HermesBridge extends EventEmitter {
   }
 
   async startNewSession(workspacePath?: string) {
+    if (this.promptInFlight) {
+      throw new Error('Cancel the current Hermes turn before starting a new session.')
+    }
+
     if (workspacePath) {
       await this.switchWorkspace(workspacePath)
     }
 
     await this.ensureBackend()
+    this.clearHistoryReplay()
     this.sessionId = null
     this.activeMessageIds.clear()
     await this.ensureSession()

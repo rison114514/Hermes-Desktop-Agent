@@ -48,6 +48,7 @@ declare global {
         updatedAt?: string
       }>>
       loadHermesSession: (sessionId: string, cwd: string) => Promise<DesktopWorkspaceSnapshot>
+      newHermesSession: () => Promise<DesktopWorkspaceSnapshot>
       createHermesWorktree: (options?: { name?: string; directory?: string }) => Promise<{
         worktree: {
           path: string

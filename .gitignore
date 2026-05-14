@@ -18,4 +18,5 @@ Thumbs.db
 .codex/
 .codex
 .worktrees/
+.hermes-tmp/
 Hermes-Desktop-Agent.code-workspace

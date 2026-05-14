@@ -239,13 +239,18 @@ function Invoke-WslBash {
     [string]$Script
   )
 
-  $result = Invoke-Native "wsl.exe" @("-d", $DistroName, "--", "bash", "-lc", $Script)
-  if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) {
-    Write-Host $result.Stdout.TrimEnd()
-  }
-  if ($result.ExitCode -ne 0) {
-    $message = if (-not [string]::IsNullOrWhiteSpace($result.Stderr)) { $result.Stderr } else { $result.Stdout }
-    throw $message
+  $scriptFile = New-WslScriptFile $Script
+  try {
+    $result = Invoke-Native "wsl.exe" @("-d", $DistroName, "--", "bash", $scriptFile.WslPath)
+    if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) {
+      Write-Host $result.Stdout.TrimEnd()
+    }
+    if ($result.ExitCode -ne 0) {
+      $message = if (-not [string]::IsNullOrWhiteSpace($result.Stderr)) { $result.Stderr } else { $result.Stdout }
+      throw $message
+    }
+  } finally {
+    Remove-Item -LiteralPath $scriptFile.WindowsPath -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -255,35 +260,67 @@ function Invoke-WslBashInteractive {
     [string]$Script
   )
 
-  wsl.exe -d $DistroName -- bash -lc $Script
-  if ($LASTEXITCODE -ne 0) {
-    throw "WSL command failed with exit code $LASTEXITCODE."
+  $scriptFile = New-WslScriptFile $Script
+  try {
+    wsl.exe -d $DistroName -- bash $scriptFile.WslPath
+    if ($LASTEXITCODE -ne 0) {
+      throw "WSL command failed with exit code $LASTEXITCODE."
+    }
+  } finally {
+    Remove-Item -LiteralPath $scriptFile.WindowsPath -Force -ErrorAction SilentlyContinue
   }
+}
+
+function New-WslScriptFile {
+  param([string]$Script)
+
+  $tempDirectory = Join-Path $repoRoot ".hermes-tmp"
+  New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
+  $windowsPath = Join-Path $tempDirectory ("wsl-" + [guid]::NewGuid().ToString("N") + ".sh")
+  [System.IO.File]::WriteAllText($windowsPath, $Script, $utf8NoBom)
+
+  return [pscustomobject]@{
+    WindowsPath = $windowsPath
+    WslPath = Convert-WindowsPathToWslPath $windowsPath
+  }
+}
+
+function Convert-WindowsPathToWslPath {
+  param([string]$WindowsPath)
+
+  $fullPath = [System.IO.Path]::GetFullPath($WindowsPath)
+  if ($fullPath -notmatch "^([A-Za-z]):\\(.*)$") {
+    throw "Cannot convert non-drive Windows path to WSL path: $fullPath"
+  }
+
+  $drive = $matches[1].ToLowerInvariant()
+  $rest = $matches[2] -replace "\\", "/"
+  return "/mnt/$drive/$rest"
 }
 
 function Ensure-WslBasics {
   param([string]$DistroName)
 
   Invoke-Step "Checking WSL basics" {
-    $script = @"
+    $script = @'
 set -e
 missing=''
 for cmd in git curl bash; do
-  if ! command -v "\$cmd" >/dev/null 2>&1; then
-    missing="\$missing \$cmd"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    missing="$missing $cmd"
   fi
 done
-if [ -n "\$missing" ]; then
+if [ -n "$missing" ]; then
   if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update
     sudo apt-get install -y git curl ca-certificates
   else
-    echo "Missing required commands:\$missing"
+    echo "Missing required commands:$missing"
     echo "Install git and curl in this WSL distro, then run the launcher again."
     exit 1
   fi
 fi
-"@
+'@
     Invoke-WslBashInteractive $DistroName $script
   }
 }

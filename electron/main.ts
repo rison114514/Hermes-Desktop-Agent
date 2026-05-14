@@ -248,6 +248,12 @@ ipcMain.handle('hermes:load-session', async (_event, sessionId: string, cwd: str
   return createWorkspaceSnapshot()
 })
 
+ipcMain.handle('hermes:new-session', async () => {
+  await hermesBridge.startNewSession(workspaceRoot)
+  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
+  return createWorkspaceSnapshot()
+})
+
 ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
   const worktree = await createHermesWorktree(workspaceRoot, options)
   workspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)

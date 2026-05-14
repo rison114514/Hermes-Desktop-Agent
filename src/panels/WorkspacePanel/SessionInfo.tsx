@@ -6,6 +6,7 @@ import {
   ExternalLink,
   FolderGit2,
   FolderOpen,
+  MessageSquarePlus,
   RefreshCw,
   Terminal,
 } from 'lucide-react'
@@ -66,7 +67,11 @@ export function SessionInfo() {
     try {
       const list = await window.hermesDesktop.listHermesSessions()
       setSessions(list)
-      setSelectedSessionId((current) => current || list[0]?.sessionId || '')
+      setSelectedSessionId((current) => (
+        current && list.some((item) => item.sessionId === current)
+          ? current
+          : list[0]?.sessionId || ''
+      ))
       setStatus(list.length ? `Loaded ${list.length} historical ACP sessions.` : 'No historical ACP sessions found.')
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to load sessions.')
@@ -119,6 +124,27 @@ export function SessionInfo() {
       setStatus(`Loaded session ${selectedSession.sessionId.slice(0, 8)} and switched workspace.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to load session.')
+    } finally {
+      setSessionLoading(false)
+    }
+  }
+
+  const handleNewSession = async () => {
+    if (!window.hermesDesktop) {
+      setStatus('Desktop bridge is unavailable.')
+      return
+    }
+
+    setSessionLoading(true)
+    try {
+      resetForSession('Starting a new ACP session...')
+      const snapshot = await window.hermesDesktop.newHermesSession()
+      setSnapshot(snapshot)
+      resetForSession(`Started a new ACP session in ${snapshot.cwd}.`)
+      await refreshSessions()
+      setStatus(`Started new session ${snapshot.session.slice(0, 8)}.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to start a new session.')
     } finally {
       setSessionLoading(false)
     }
@@ -300,7 +326,19 @@ export function SessionInfo() {
 
       <div className="space-y-3">
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Active ID</p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Active ID</p>
+            <button
+              type="button"
+              onClick={() => void handleNewSession()}
+              disabled={sessionLoading}
+              className="flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1.5 text-[11px] text-emerald-100 transition enabled:hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+              title="Start a new ACP session"
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              New
+            </button>
+          </div>
           <p className="mt-1 break-all">{session}</p>
         </div>
 
