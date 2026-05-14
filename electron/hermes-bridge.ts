@@ -2,7 +2,7 @@ import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { normalizeMaybeText } from './text-normalization.js'
-import { createUtf8ProcessEnv, windowsPathToWslPath } from './wsl-paths.js'
+import { createUtf8ProcessEnv, resolveWslDistro, windowsPathToWslPath } from './wsl-paths.js'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
@@ -54,7 +54,6 @@ type HistoryTurn =
   | { role: 'user'; id: string; text: string }
   | { role: 'assistant'; id: string; text: string; tools: Array<HermesBridgeEvent & { type: 'tool' }> }
 
-const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
 const HERMES_DIAGNOSTIC_PREVIEW_CHARS = 20_000
 
 export class HermesBridge extends EventEmitter {
@@ -283,10 +282,11 @@ export class HermesBridge extends EventEmitter {
     }
 
     const wslWorkspace = windowsPathToWslPath(this.workspacePath)
+    const distro = await resolveWslDistro()
 
     const child = spawn('wsl.exe', [
       '-d',
-      DEFAULT_WSL_DISTRO,
+      distro,
       '--cd',
       wslWorkspace,
       '--',
@@ -303,7 +303,7 @@ export class HermesBridge extends EventEmitter {
     ], {
       stdio: 'pipe',
       windowsHide: true,
-      env: createUtf8ProcessEnv(),
+      env: createUtf8ProcessEnv({ ...process.env, HERMES_WSL_DISTRO: distro }),
     })
     this.process = child
 
@@ -311,7 +311,7 @@ export class HermesBridge extends EventEmitter {
       type: 'status',
       payload: {
         stage: 'boot',
-        detail: `Starting Hermes ACP in ${DEFAULT_WSL_DISTRO}.`,
+        detail: `Starting Hermes ACP in ${distro}.`,
       },
     })
 

@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { TextDecoder } from 'node:util'
 
-export const DEFAULT_WSL_DISTRO = process.env.HERMES_WSL_DISTRO || 'Ubuntu-22.04'
+let resolvedWslDistro: string | null = null
+let resolvingWslDistro: Promise<string> | null = null
 
 export const UTF8_PROCESS_ENV = {
   PYTHONUTF8: '1',
@@ -61,6 +62,72 @@ function execFileAsync(command: string, args: string[], encoding: CommandOutputE
   })
 }
 
+export function getCachedWslDistro() {
+  return resolvedWslDistro ?? process.env.HERMES_WSL_DISTRO ?? null
+}
+
+export async function resolveWslDistro() {
+  const configured = process.env.HERMES_WSL_DISTRO?.trim()
+  if (configured) {
+    resolvedWslDistro = configured
+    return configured
+  }
+
+  if (resolvedWslDistro) {
+    return resolvedWslDistro
+  }
+
+  if (!resolvingWslDistro) {
+    resolvingWslDistro = detectDefaultWslDistro()
+      .then((distro) => {
+        resolvedWslDistro = distro
+        process.env.HERMES_WSL_DISTRO = distro
+        return distro
+      })
+      .finally(() => {
+        resolvingWslDistro = null
+      })
+  }
+
+  return resolvingWslDistro
+}
+
+async function detectDefaultWslDistro() {
+  const output = await execFileAsync('wsl.exe', ['-l', '-v'], 'utf16le')
+  const distro = parseWslListVerbose(output)
+  if (!distro) {
+    throw new Error("No WSL distro was found. Install one with 'wsl --install -d Ubuntu' or set HERMES_WSL_DISTRO.")
+  }
+
+  return distro
+}
+
+export function parseWslListVerbose(output: string) {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\0/g, '').trimEnd())
+    .filter((line) => line.trim())
+
+  const defaultLine = lines.find((line) => line.trimStart().startsWith('*'))
+  const candidateLine = defaultLine ?? lines.find((line) => {
+    const trimmed = line.trim()
+    return trimmed && !/^NAME\s+STATE\s+VERSION$/i.test(trimmed)
+  })
+
+  if (!candidateLine) {
+    return null
+  }
+
+  const clean = candidateLine.trim().replace(/^\*\s*/, '')
+  const match = clean.match(/^(?<name>.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting|Exporting|Importing)\s+\d+\s*$/)
+  if (match?.groups?.name) {
+    return match.groups.name.trim()
+  }
+
+  const [first] = clean.split(/\s{2,}/)
+  return first?.trim() || null
+}
+
 export function windowsPathToWslPath(windowsPath: string) {
   if (windowsPath.startsWith('/')) {
     return windowsPath.replace(/\\/g, '/')
@@ -103,15 +170,19 @@ export function uncPathToWslPath(uncPath: string) {
   return rest ? `/${rest}` : '/'
 }
 
-export function wslPathToUncPath(wslPath: string, distro = DEFAULT_WSL_DISTRO) {
+export function wslPathToUncPath(wslPath: string, distro = getCachedWslDistro()) {
   if (wslPath.startsWith('/mnt/')) {
+    return null
+  }
+
+  if (!distro) {
     return null
   }
 
   return `\\\\wsl.localhost\\${distro}${wslPath.replace(/\//g, '\\')}`
 }
 
-export async function toWslPath(hostPath: string, distro = DEFAULT_WSL_DISTRO) {
+export async function toWslPath(hostPath: string, distro?: string) {
   if (hostPath.startsWith('\\\\wsl')) {
     const wslPath = uncPathToWslPath(hostPath)
     if (wslPath) {
@@ -123,18 +194,21 @@ export async function toWslPath(hostPath: string, distro = DEFAULT_WSL_DISTRO) {
     return windowsPathToWslPath(hostPath)
   }
 
-  return execFileAsync('wsl.exe', ['-d', distro, '--', 'wslpath', '-u', hostPath])
+  const resolvedDistro = distro ?? await resolveWslDistro()
+  return execFileAsync('wsl.exe', ['-d', resolvedDistro, '--', 'wslpath', '-u', hostPath])
 }
 
-export async function toWindowsPath(wslPath: string, distro = DEFAULT_WSL_DISTRO) {
+export async function toWindowsPath(wslPath: string, distro?: string) {
   const mounted = wslPathToWindowsPath(wslPath)
   if (mounted) {
     return mounted
   }
 
-  return execFileAsync('wsl.exe', ['-d', distro, '--', 'wslpath', '-w', wslPath])
+  const resolvedDistro = distro ?? await resolveWslDistro()
+  return execFileAsync('wsl.exe', ['-d', resolvedDistro, '--', 'wslpath', '-w', wslPath])
 }
 
-export async function runWslCommand(args: string[], distro = DEFAULT_WSL_DISTRO) {
-  return execFileAsync('wsl.exe', ['-d', distro, '--', ...args])
+export async function runWslCommand(args: string[], distro?: string) {
+  const resolvedDistro = distro ?? await resolveWslDistro()
+  return execFileAsync('wsl.exe', ['-d', resolvedDistro, '--', ...args])
 }

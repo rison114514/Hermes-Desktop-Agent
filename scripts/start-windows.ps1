@@ -92,6 +92,41 @@ function Invoke-Step {
   & $Command
 }
 
+function Invoke-Npm {
+  param([string[]]$Arguments)
+
+  & npm @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "npm $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+  }
+}
+
+function Test-WindowsNpmDependencies {
+  $requiredBins = @(
+    "node_modules\.bin\vite.cmd",
+    "node_modules\.bin\cross-env.cmd",
+    "node_modules\.bin\electron.cmd"
+  )
+
+  foreach ($relativePath in $requiredBins) {
+    if (-not (Test-Path (Join-Path $repoRoot $relativePath))) {
+      return $false
+    }
+  }
+
+  return $true
+}
+
+function Install-WindowsNpmDependencies {
+  Invoke-Step "Installing Windows npm dependencies" {
+    if (Test-Path (Join-Path $repoRoot "package-lock.json")) {
+      Invoke-Npm @("ci")
+    } else {
+      Invoke-Npm @("install")
+    }
+  }
+}
+
 function Get-DefaultWslDistro {
   $result = Invoke-WslListVerbose
   if ($result.ExitCode -ne 0) {
@@ -355,10 +390,9 @@ Invoke-Step "Checking Hermes ACP in WSL" {
   Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null && hermes acp --help >/dev/null'
 }
 
-if (-not (Test-Path (Join-Path $repoRoot "node_modules"))) {
-  Invoke-Step "Installing Windows npm dependencies" {
-    npm install
-  }
+if (-not (Test-WindowsNpmDependencies)) {
+  Write-Host "Windows npm dependencies are missing or incomplete." -ForegroundColor Yellow
+  Install-WindowsNpmDependencies
 }
 
 $rendererBuilt = Test-Path (Join-Path $repoRoot "dist\index.html")
@@ -366,10 +400,10 @@ $mainBuilt = Test-Path (Join-Path $repoRoot "dist-electron\electron\main.js")
 
 if ($Build -or -not ($rendererBuilt -and $mainBuilt)) {
   Invoke-Step "Building renderer and Electron main process" {
-    npm run build
+    Invoke-Npm @("run", "build")
   }
 }
 
 Invoke-Step "Starting Hermes Desktop Agent" {
-  npm run electron:windows
+  Invoke-Npm @("run", "electron:windows")
 }

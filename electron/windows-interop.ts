@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { clipboard, shell } from 'electron'
 import {
-  DEFAULT_WSL_DISTRO,
+  resolveWslDistro,
   runWslCommand,
   toWindowsPath,
   toWslPath,
@@ -12,7 +12,7 @@ import {
 } from './wsl-paths.js'
 
 export {
-  DEFAULT_WSL_DISTRO,
+  resolveWslDistro,
   runWslCommand,
   toWindowsPath,
   toWslPath,
@@ -62,17 +62,18 @@ export async function writeWindowsClipboard(text: string) {
 }
 
 export async function getWindowsInteropSnapshot(hostPath: string): Promise<WindowsInteropSnapshot> {
+  const distro = await resolveWslDistro()
   const workspaceMode = hostPath.startsWith('\\\\wsl') ? 'wsl-workspace' : 'windows-workspace'
-  const wslPath = await toWslPath(hostPath)
+  const wslPath = await toWslPath(hostPath, distro)
   const windowsPath = workspaceMode === 'windows-workspace'
     ? path.resolve(hostPath)
-    : await toWindowsPath(wslPath).catch(() => null)
-  const uncPath = workspaceMode === 'wsl-workspace' ? path.resolve(hostPath) : wslPathToUncPath(wslPath)
+    : await toWindowsPath(wslPath, distro).catch(() => null)
+  const uncPath = workspaceMode === 'wsl-workspace' ? path.resolve(hostPath) : wslPathToUncPath(wslPath, distro)
 
   return {
     available: true,
     hostPlatform: process.platform,
-    distro: DEFAULT_WSL_DISTRO,
+    distro,
     workspaceMode,
     wslPath,
     windowsPath,

@@ -11,20 +11,31 @@ Hermes Desktop Agent 是一个运行在 Windows 上的 Hermes 桌面助手。它
 
 ## 使用方式
 
-### 1. 准备环境
+### 1. 推荐下载 Release 版
 
-Windows 侧需要：
+普通用户推荐下载 Release 包，然后直接运行：
+
+```text
+Hermes Desktop Agent-0.1.0-x64.exe
+```
+
+Release 版已经内置桌面前端运行时，不需要在宿主机安装 Node.js 或 npm。
+
+### 2. 准备环境
+
+普通用户需要：
 
 - Windows 11，或支持 WSL2 的 Windows 10+。
-- Node.js 20+。
-- npm 10+。
 - PowerShell 5.1 或 PowerShell 7+。
 
-WSL 与 Hermes 不需要提前完全配置好；启动脚本会尽量自动检查和引导安装。
+开发者从源码运行时额外需要：
 
-### 2. 一键启动
+- Node.js 20+。
+- npm 10+。
 
-从 GitHub 下载 ZIP 包并解压后，双击：
+### 3. 从源码一键启动
+
+如果下载的是源码 ZIP 包，解压后双击：
 
 ```text
 start-hermes-desktop.cmd
@@ -41,7 +52,7 @@ start-hermes-desktop.cmd
 
 如果安装 WSL 后提示需要重启 Windows，请重启后再次双击 `start-hermes-desktop.cmd`。
 
-### 3. 配置模型
+### 4. 配置模型
 
 首次运行时，如果 Hermes 还没有配置模型，启动脚本会进入：
 
@@ -97,7 +108,8 @@ npm run build
 
 ## 常见问题
 
-- ZIP 用户可以直接双击启动脚本，不需要先手动安装 Hermes。
+- 普通用户优先下载 Release 版，不需要安装 Node.js/npm。
+- 源码 ZIP 用户需要宿主机安装 Node.js/npm，然后双击启动脚本。
 - Windows 侧依赖需要在 Windows PowerShell 中安装，不能复用 WSL 内的 `node_modules`。
 - 如果 GitHub 下载较慢或失败，脚本会尝试使用镜像源；如果仍失败，请检查当前网络是否能从 WSL 内访问外网。
 - 如果历史 session 无法恢复，先确认 WSL 内 Hermes 能正常执行 `hermes config check` 和 `hermes doctor`。

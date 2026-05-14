@@ -477,7 +477,7 @@ export function SessionInfo() {
             </div>
             <div>
               <p className="text-slate-500">WSL</p>
-              <p className="text-slate-200">{windows.distro ?? 'Ubuntu-22.04'}</p>
+              <p className="text-slate-200">{windows.distro ?? 'Auto'}</p>
             </div>
           </div>
           <p className="mt-2 rounded-full border border-cyan-300/15 bg-cyan-300/8 px-2 py-1 text-[11px] text-cyan-100">

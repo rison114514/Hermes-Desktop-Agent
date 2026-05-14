@@ -72,7 +72,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   windows: {
     available: false,
     hostPlatform: 'win32',
-    distro: 'Ubuntu-22.04',
+    distro: 'Auto',
     workspaceMode: 'windows-workspace',
     wslPath: '/home/rison/hermes-desktop-agent',
     windowsPath: null,

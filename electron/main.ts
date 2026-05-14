@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
 import { access, readFile, rename, stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -70,7 +70,7 @@ function createTray() {
     return
   }
 
-  tray = new Tray(nativeImage.createFromDataURL(getTrayIconDataUrl()))
+  tray = new Tray(getAppIconPath())
   tray.setToolTip('Hermes 桌面助手')
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -108,6 +108,7 @@ async function createWindow() {
     alwaysOnTop: state.alwaysOnTop,
     fullscreenable: false,
     autoHideMenuBar: true,
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -707,8 +708,8 @@ function stringifyPermissionPayload(payload: unknown) {
   }
 }
 
-function getTrayIconDataUrl() {
-  return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAwUlEQVR4AWOgH2DgPxQMDP9nYGBg+A8E8R8GhoZ/GP5jYGA4gKkGJYbi/6OhoWE4gWQxMDBg+I8RkYHhP0YGBsY/gKQDmRgeIPmPkcHhP8bAwPAfSAbCwPD/MPzHwMDA8B8jAwPDfwyMDAwM/0EwmIGBkf8wMDAw/AdkYGj4j5GBgWE4w2mB4T9GRgaG/xgYGBj+AzIYGBj+Y2BgYPgPZGB4g+Q/RkYGhv8YGhgY/gMyMDB8x8DAwPAfIwMDw38MDAwMDP8B0m0gGQbqYVMAAAAASUVORK5CYII='
+function getAppIconPath() {
+  return path.join(app.getAppPath(), 'assets', 'icon.ico')
 }
 
 async function selectDirectory(title: string, defaultPath: string) {

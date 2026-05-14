@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "基于 Electron、React 与 Vite 的 Hermes 桌面助手外壳。",
+  "description": "Windows desktop assistant for Hermes ACP.",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "npm run dev:windows",
@@ -16,11 +16,45 @@
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable zip",
     "test:core": "npm run build:main && node scripts/verify-core.mjs",
     "preview": "vite preview",
     "electron:preview": "npm run electron:windows",
     "electron:windows": "cross-env ELECTRON_IS_DEV=0 electron .",
     "electron:wslg": "cross-env ELECTRON_IS_DEV=0 ./scripts/run-with-dbus.sh electron ."
+  },
+  "build": {
+    "appId": "com.hermes.desktop-agent",
+    "productName": "Hermes Desktop Agent",
+    "directories": {
+      "output": "release-build"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "assets/icon.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -42,6 +76,7 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.0.0",
     "electron": "^37.4.0",
+    "electron-builder": "^26.8.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.13",
     "typescript": "^5.9.2",

@@ -15,6 +15,7 @@ import { readWorkspaceDirectory } from '../dist-electron/electron/workspace-tree
 import {
   createUtf8ProcessEnv,
   decodeCommandOutput,
+  parseWslListVerbose,
   uncPathToWslPath,
   UTF8_PROCESS_ENV,
   windowsPathToWslPath,
@@ -35,6 +36,14 @@ assert.equal(
   '\\\\wsl.localhost\\Ubuntu-22.04\\home\\rison\\project',
 )
 assert.equal(wslPathToUncPath('/mnt/e/Hermes-Desktop-Agent', 'Ubuntu-22.04'), null)
+assert.equal(
+  parseWslListVerbose('  NAME            STATE           VERSION\r\n* Ubuntu          Running         2\r\n  Debian          Stopped         2\r\n'),
+  'Ubuntu',
+)
+assert.equal(
+  parseWslListVerbose('  NAME            STATE           VERSION\r\n  Ubuntu-22.04    Stopped         2\r\n'),
+  'Ubuntu-22.04',
+)
 assert.equal(UTF8_PROCESS_ENV.PYTHONUTF8, '1')
 assert.equal(UTF8_PROCESS_ENV.PYTHONIOENCODING, 'utf-8')
 assert.equal(UTF8_PROCESS_ENV.LANG, 'C.UTF-8')
