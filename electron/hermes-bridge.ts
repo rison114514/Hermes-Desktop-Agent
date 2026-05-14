@@ -2,7 +2,7 @@ import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { normalizeMaybeText } from './text-normalization.js'
-import { createUtf8ProcessEnv, resolveWslDistro, windowsPathToWslPath } from './wsl-paths.js'
+import { createUtf8ProcessEnv, resolveWslDistro, runWslCommand, windowsPathToWslPath } from './wsl-paths.js'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
@@ -283,6 +283,7 @@ export class HermesBridge extends EventEmitter {
 
     const wslWorkspace = windowsPathToWslPath(this.workspacePath)
     const distro = await resolveWslDistro()
+    await this.ensureHermesInstalled(distro)
 
     const child = spawn('wsl.exe', [
       '-d',
@@ -385,6 +386,63 @@ export class HermesBridge extends EventEmitter {
         detail: model ? `Hermes ACP initialized with ${model}.` : 'Hermes ACP initialized.',
       },
     })
+  }
+
+  private async ensureHermesInstalled(distro: string) {
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'checking-backend', detail: `Checking Hermes in ${distro}.` },
+    })
+
+    try {
+      await runWslCommand(['bash', '-lc', 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null 2>&1 && hermes --version >/dev/null 2>&1'], distro)
+      return
+    } catch {
+      this.emitEvent({
+        type: 'status',
+        payload: { stage: 'installing-backend', detail: `Hermes was not found in ${distro}. Installing Hermes now.` },
+      })
+    }
+
+    const installerScript = [
+      'set -e',
+      'export PATH="$HOME/.local/bin:$PATH"',
+      'export PYTHONUTF8=1',
+      'export PYTHONIOENCODING=utf-8',
+      'export LANG=C.UTF-8',
+      'export LC_ALL=C.UTF-8',
+      'export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"',
+      'export UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"',
+      'export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"',
+      'install_urls="',
+      'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
+      'https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
+      'https://ghfast.top/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
+      '"',
+      'installed=0',
+      'for url in $install_urls; do',
+      '  echo "Trying Hermes installer: $url"',
+      '  if curl -fsSL "$url" -o /tmp/hermes-install.sh; then',
+      '    bash /tmp/hermes-install.sh',
+      '    rm -f /tmp/hermes-install.sh',
+      '    installed=1',
+      '    break',
+      '  fi',
+      'done',
+      'if [ "$installed" != "1" ]; then',
+      '  echo "Unable to download Hermes installer." >&2',
+      '  exit 1',
+      'fi',
+      'command -v hermes >/dev/null 2>&1',
+      'hermes --version >/dev/null 2>&1',
+    ].join('\n')
+
+    try {
+      await runWslCommand(['bash', '-lc', installerScript], distro)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`Hermes is not installed in ${distro}, and automatic installation failed. Check WSL network/proxy access, then install Hermes manually and restart Hermes Desktop Agent. ${detail}`)
+    }
   }
 
   private sendRequest(method: string, params: unknown, timeoutMs = 30_000) {

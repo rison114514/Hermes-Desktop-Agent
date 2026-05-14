@@ -4,6 +4,7 @@ import { TextDecoder } from 'node:util'
 
 let resolvedWslDistro: string | null = null
 let resolvingWslDistro: Promise<string> | null = null
+const DEFAULT_INSTALL_DISTRO = 'Ubuntu'
 
 export const UTF8_PROCESS_ENV = {
   PYTHONUTF8: '1',
@@ -14,6 +15,13 @@ export const UTF8_PROCESS_ENV = {
 } as const
 
 type CommandOutputEncoding = BufferEncoding | 'gbk' | 'gb18030'
+export type WslDistroInfo = {
+  name: string
+  state?: string
+  version?: number
+  default: boolean
+  system: boolean
+}
 
 export function createUtf8ProcessEnv(base: NodeJS.ProcessEnv = process.env) {
   return {
@@ -69,6 +77,10 @@ export function getCachedWslDistro() {
 export async function resolveWslDistro() {
   const configured = process.env.HERMES_WSL_DISTRO?.trim()
   if (configured) {
+    if (isSystemWslDistro(configured)) {
+      throw new Error(`${configured} is a Docker Desktop internal WSL distro and cannot run Hermes. Install Ubuntu with 'wsl --install -d Ubuntu' or set HERMES_WSL_DISTRO to a regular Linux distro.`)
+    }
+
     resolvedWslDistro = configured
     return configured
   }
@@ -93,39 +105,73 @@ export async function resolveWslDistro() {
 }
 
 async function detectDefaultWslDistro() {
-  const output = await execFileAsync('wsl.exe', ['-l', '-v'], 'utf16le')
-  const distro = parseWslListVerbose(output)
+  const distro = await detectUsableWslDistro()
   if (!distro) {
-    throw new Error("No WSL distro was found. Install one with 'wsl --install -d Ubuntu' or set HERMES_WSL_DISTRO.")
+    await installDefaultWslDistro()
+    const installedDistro = await detectUsableWslDistro()
+    if (installedDistro) {
+      return installedDistro
+    }
+
+    throw new Error("No usable WSL distro was found. Docker Desktop's internal distro cannot run Hermes. Finish Ubuntu installation or run 'wsl --install -d Ubuntu', then restart Hermes Desktop Agent.")
   }
 
   return distro
 }
 
+async function detectUsableWslDistro() {
+  const output = await execFileAsync('wsl.exe', ['-l', '-v'], 'utf16le')
+  return parseWslListVerbose(output)
+}
+
+async function installDefaultWslDistro() {
+  try {
+    await execFileAsync('wsl.exe', ['--install', '-d', DEFAULT_INSTALL_DISTRO], 'utf8')
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`No usable WSL distro was found. Docker Desktop's internal distro cannot run Hermes. Tried to install ${DEFAULT_INSTALL_DISTRO}, but it did not complete. Run 'wsl --install -d ${DEFAULT_INSTALL_DISTRO}' from an elevated PowerShell, restart Windows if prompted, then launch Hermes Desktop Agent again. ${detail}`)
+  }
+}
+
 export function parseWslListVerbose(output: string) {
+  const distros = parseWslListVerboseEntries(output)
+  const defaultDistro = distros.find((distro) => distro.default && !distro.system)
+  const firstUsableDistro = distros.find((distro) => !distro.system)
+  return defaultDistro?.name ?? firstUsableDistro?.name ?? null
+}
+
+export function parseWslListVerboseEntries(output: string): WslDistroInfo[] {
   const lines = output
     .split(/\r?\n/)
     .map((line) => line.replace(/\0/g, '').trimEnd())
     .filter((line) => line.trim())
 
-  const defaultLine = lines.find((line) => line.trimStart().startsWith('*'))
-  const candidateLine = defaultLine ?? lines.find((line) => {
+  return lines.flatMap((line) => {
     const trimmed = line.trim()
-    return trimmed && !/^NAME\s+STATE\s+VERSION$/i.test(trimmed)
+    if (!trimmed || /^NAME\s+STATE\s+VERSION$/i.test(trimmed)) {
+      return []
+    }
+
+    const isDefault = trimmed.startsWith('*')
+    const clean = trimmed.replace(/^\*\s*/, '')
+    const match = clean.match(/^(?<name>.+?)\s+(?<state>Running|Stopped|Installing|Uninstalling|Converting|Exporting|Importing)\s+(?<version>\d+)\s*$/)
+    const name = match?.groups?.name?.trim() ?? clean.split(/\s{2,}/)[0]?.trim()
+    if (!name) {
+      return []
+    }
+
+    return [{
+      name,
+      state: match?.groups?.state,
+      version: match?.groups?.version ? Number(match.groups.version) : undefined,
+      default: isDefault,
+      system: isSystemWslDistro(name),
+    }]
   })
+}
 
-  if (!candidateLine) {
-    return null
-  }
-
-  const clean = candidateLine.trim().replace(/^\*\s*/, '')
-  const match = clean.match(/^(?<name>.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting|Exporting|Importing)\s+\d+\s*$/)
-  if (match?.groups?.name) {
-    return match.groups.name.trim()
-  }
-
-  const [first] = clean.split(/\s{2,}/)
-  return first?.trim() || null
+export function isSystemWslDistro(name: string) {
+  return /^docker-desktop(?:-data)?$/i.test(name.trim())
 }
 
 export function windowsPathToWslPath(windowsPath: string) {

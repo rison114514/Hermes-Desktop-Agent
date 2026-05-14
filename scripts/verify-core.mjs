@@ -15,7 +15,9 @@ import { readWorkspaceDirectory } from '../dist-electron/electron/workspace-tree
 import {
   createUtf8ProcessEnv,
   decodeCommandOutput,
+  isSystemWslDistro,
   parseWslListVerbose,
+  parseWslListVerboseEntries,
   uncPathToWslPath,
   UTF8_PROCESS_ENV,
   windowsPathToWslPath,
@@ -43,6 +45,21 @@ assert.equal(
 assert.equal(
   parseWslListVerbose('  NAME            STATE           VERSION\r\n  Ubuntu-22.04    Stopped         2\r\n'),
   'Ubuntu-22.04',
+)
+assert.equal(
+  parseWslListVerbose('  NAME                   STATE           VERSION\r\n* docker-desktop         Running         2\r\n  docker-desktop-data    Stopped         2\r\n'),
+  null,
+)
+assert.equal(
+  parseWslListVerbose('  NAME                   STATE           VERSION\r\n* docker-desktop         Running         2\r\n  Ubuntu                 Stopped         2\r\n'),
+  'Ubuntu',
+)
+assert.equal(isSystemWslDistro('docker-desktop'), true)
+assert.equal(isSystemWslDistro('docker-desktop-data'), true)
+assert.equal(isSystemWslDistro('Ubuntu'), false)
+assert.deepEqual(
+  parseWslListVerboseEntries('  NAME            STATE           VERSION\r\n* Ubuntu          Running         2\r\n')[0],
+  { name: 'Ubuntu', state: 'Running', version: 2, default: true, system: false },
 )
 assert.equal(UTF8_PROCESS_ENV.PYTHONUTF8, '1')
 assert.equal(UTF8_PROCESS_ENV.PYTHONIOENCODING, 'utf-8')

@@ -20,6 +20,7 @@ Hermes Desktop Agent-0.1.0-x64.exe
 ```
 
 Release 版已经内置桌面前端运行时，不需要在宿主机安装 Node.js 或 npm。
+启动后会自动检测可用的 WSL Linux 发行版；如果只检测到 Docker Desktop 的内部发行版，会尝试安装默认 Ubuntu。
 
 ### 2. 准备环境
 
@@ -112,4 +113,5 @@ npm run build
 - 源码 ZIP 用户需要宿主机安装 Node.js/npm，然后双击启动脚本。
 - Windows 侧依赖需要在 Windows PowerShell 中安装，不能复用 WSL 内的 `node_modules`。
 - 如果 GitHub 下载较慢或失败，脚本会尝试使用镜像源；如果仍失败，请检查当前网络是否能从 WSL 内访问外网。
+- Docker Desktop 自带的 `docker-desktop` / `docker-desktop-data` 不是普通 Linux 工作环境，不能用于运行 Hermes；请安装 Ubuntu 等常规 WSL 发行版。
 - 如果历史 session 无法恢复，先确认 WSL 内 Hermes 能正常执行 `hermes config check` 和 `hermes doctor`。
