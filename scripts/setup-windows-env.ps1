@@ -88,6 +88,79 @@ function Quote-ProcessArgument {
   return '"' + ($Argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
 
+function Test-Administrator {
+  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-WindowsOptionalFeatureState {
+  param([string]$FeatureName)
+
+  try {
+    $feature = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction Stop
+    return [string]$feature.State
+  } catch {
+    return "Unknown"
+  }
+}
+
+function Enable-WslPlatformFeaturesIfNeeded {
+  $features = @(
+    [pscustomobject]@{
+      Name = "Microsoft-Windows-Subsystem-Linux"
+      Label = "Windows Subsystem for Linux"
+    },
+    [pscustomobject]@{
+      Name = "VirtualMachinePlatform"
+      Label = "Virtual Machine Platform"
+    }
+  )
+
+  $disabled = @()
+  foreach ($feature in $features) {
+    $state = Get-WindowsOptionalFeatureState $feature.Name
+    Write-Host "$($feature.Label): $state"
+    if ($state -ne "Enabled") {
+      $disabled += $feature
+    }
+  }
+
+  if (-not $disabled) {
+    return $false
+  }
+
+  if (-not (Test-Administrator)) {
+    throw @"
+WSL platform features are not enabled yet.
+Run setup-hermes-environment.cmd as administrator, then run it again.
+Required features:
+- Microsoft-Windows-Subsystem-Linux
+- VirtualMachinePlatform
+"@
+  }
+
+  foreach ($feature in $disabled) {
+    Write-Host "Enabling $($feature.Label)..." -ForegroundColor Yellow
+    $result = Invoke-Native "dism.exe" @(
+      "/online",
+      "/enable-feature",
+      "/featurename:$($feature.Name)",
+      "/all",
+      "/norestart"
+    )
+
+    if ($result.ExitCode -ne 0) {
+      $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
+      throw "Failed to enable $($feature.Label). $message"
+    }
+  }
+
+  Write-Host ""
+  Write-Host "WSL platform features were enabled. Restart Windows, then run this setup again." -ForegroundColor Yellow
+  return $true
+}
+
 function Invoke-WslListVerbose {
   Invoke-Native "wsl.exe" @("-l", "-v") ([System.Text.Encoding]::Unicode)
 }
@@ -469,6 +542,12 @@ function Test-HermesAcp {
   Invoke-Step "Checking Hermes ACP" {
     Invoke-WslBash $DistroName 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null && hermes acp --help >/dev/null'
     Write-Host "Hermes ACP is available."
+  }
+}
+
+Invoke-Step "Checking Windows WSL platform" {
+  if (Enable-WslPlatformFeaturesIfNeeded) {
+    exit 3010
   }
 }
 

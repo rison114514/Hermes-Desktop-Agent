@@ -18,6 +18,14 @@ if not exist "%PS_EXE%" (
 "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup-windows-env.ps1"
 set "EXIT_CODE=%ERRORLEVEL%"
 
+if "%EXIT_CODE%"=="3010" (
+  echo.
+  echo WSL platform features were enabled. Please restart Windows, then run this setup again.
+  echo Press any key to close this window.
+  pause >nul
+  exit /b 3010
+)
+
 if not "%EXIT_CODE%"=="0" (
   echo.
   echo Hermes environment setup failed. Exit code: %EXIT_CODE%
