@@ -136,6 +136,21 @@ function Get-UsableWslDistro {
   return ($usable | Select-Object -First 1).Name
 }
 
+function Test-WslDistroExists {
+  param([string]$Name)
+
+  $result = Invoke-WslListVerbose
+  if ($result.ExitCode -ne 0) {
+    return $false
+  }
+
+  $lines = $result.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").Trim() }
+  return [bool]($lines | Where-Object {
+    $line = $_ -replace '^\*\s*', ''
+    $line -match ('^' + [regex]::Escape($Name) + '\s+')
+  })
+}
+
 function Install-WslDefaultDistro {
   Write-Host "No usable WSL Linux distro was found. Docker Desktop distros are not supported." -ForegroundColor Yellow
   Write-Host "Installing Ubuntu through WSL. Windows may request administrator approval or a reboot." -ForegroundColor Yellow
@@ -153,12 +168,114 @@ function Install-WslDefaultDistro {
   }
 
   $webResult = Invoke-Native "wsl.exe" @("--install", "--web-download", "-d", "Ubuntu")
-  if ($webResult.ExitCode -ne 0) {
-    $webMessage = if ($webResult.Stderr) { $webResult.Stderr } else { $webResult.Stdout }
-    throw "Automatic Ubuntu installation did not complete. Run 'wsl --install --web-download -d Ubuntu' from an elevated PowerShell, restart Windows if prompted, then run this setup again. $webMessage"
+  if ($webResult.ExitCode -eq 0) {
+    Write-Host "Ubuntu installation command completed. If Windows asks for a reboot or Ubuntu asks for first-time user setup, finish that step and run this setup again." -ForegroundColor Yellow
+    return
   }
 
-  Write-Host "Ubuntu installation command completed. If Windows asks for a reboot or Ubuntu asks for first-time user setup, finish that step and run this setup again." -ForegroundColor Yellow
+  $webMessage = if ($webResult.Stderr) { $webResult.Stderr } else { $webResult.Stdout }
+  if ($webMessage) {
+    Write-Host $webMessage -ForegroundColor Yellow
+  }
+
+  if (Install-UbuntuWithWinget) {
+    return
+  }
+
+  Import-UbuntuRootfsDistro
+}
+
+function Install-UbuntuWithWinget {
+  if (-not (Get-Command "winget.exe" -ErrorAction SilentlyContinue)) {
+    return $false
+  }
+
+  Write-Host "Trying Ubuntu installation through winget..." -ForegroundColor Yellow
+  $result = Invoke-Native "winget.exe" @(
+    "install",
+    "--id",
+    "Canonical.Ubuntu.2404",
+    "-e",
+    "--source",
+    "winget",
+    "--accept-package-agreements",
+    "--accept-source-agreements"
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) {
+    Write-Host $result.Stdout
+  }
+  if ($result.ExitCode -ne 0) {
+    $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
+    if ($message) {
+      Write-Host "winget Ubuntu installation did not complete. $message" -ForegroundColor Yellow
+    }
+    return $false
+  }
+
+  Write-Host "winget completed. If Ubuntu opens for first-time setup, finish it and run this setup again." -ForegroundColor Yellow
+  return $true
+}
+
+function Import-UbuntuRootfsDistro {
+  $distroName = "HermesUbuntu"
+  if (Test-WslDistroExists $distroName) {
+    Write-Host "$distroName already exists."
+    return
+  }
+
+  Write-Host "Trying direct Ubuntu WSL rootfs import as a final fallback..." -ForegroundColor Yellow
+  Write-Host "This downloads the official Canonical Ubuntu 24.04 WSL rootfs, then imports it as $distroName." -ForegroundColor Yellow
+
+  $baseDirectory = Join-Path $env:LOCALAPPDATA "HermesDesktopAgent\wsl"
+  $installDirectory = Join-Path $baseDirectory $distroName
+  $downloadDirectory = Join-Path $env:TEMP "HermesDesktopAgent"
+  $archivePath = Join-Path $downloadDirectory "ubuntu-noble-wsl-amd64.rootfs.tar.gz"
+  New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+  New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+
+  $urls = @(
+    "https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz",
+    "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
+  )
+
+  $downloaded = $false
+  foreach ($url in $urls) {
+    Write-Host "Downloading Ubuntu rootfs: $url"
+    $download = Invoke-Native "curl.exe" @("-L", "--fail", "--retry", "2", "--connect-timeout", "20", "-o", $archivePath, $url)
+    if ($download.ExitCode -eq 0 -and (Test-Path $archivePath)) {
+      $downloaded = $true
+      break
+    }
+
+    $message = if ($download.Stderr) { $download.Stderr } else { $download.Stdout }
+    if ($message) {
+      Write-Host $message -ForegroundColor Yellow
+    }
+  }
+
+  if (-not $downloaded) {
+    throw @"
+Automatic Ubuntu installation failed because Microsoft Store/web-download and direct Canonical rootfs download were unavailable.
+Manual fallback:
+1. Download Ubuntu 24.04 WSL rootfs from https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz
+2. Run: wsl --import HermesUbuntu "$installDirectory" "<downloaded-rootfs.tar.gz>" --version 2
+3. Run this setup again.
+"@
+  }
+
+  $import = Invoke-Native "wsl.exe" @("--import", $distroName, $installDirectory, $archivePath, "--version", "2")
+  if ($import.ExitCode -ne 0) {
+    $message = if ($import.Stderr) { $import.Stderr } else { $import.Stdout }
+    throw "Downloaded Ubuntu rootfs, but WSL import failed. $message"
+  }
+
+  $setDefault = Invoke-Native "wsl.exe" @("--set-default", $distroName)
+  if ($setDefault.ExitCode -ne 0) {
+    Write-Host "Imported $distroName, but could not set it as default. The setup will still use it directly." -ForegroundColor Yellow
+  }
+
+  Write-Host "Imported Ubuntu as WSL distro: $distroName"
 }
 
 function Ensure-WslReady {
@@ -241,8 +358,18 @@ for cmd in git curl bash; do
 done
 if [ -n "$missing" ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y git curl ca-certificates
+    run_apt() {
+      if [ "$(id -u)" -eq 0 ]; then
+        apt-get "$@"
+      elif command -v sudo >/dev/null 2>&1; then
+        sudo apt-get "$@"
+      else
+        echo "Missing sudo and current user is not root. Install git and curl in this WSL distro, then run this setup again."
+        exit 1
+      fi
+    }
+    run_apt update
+    run_apt install -y git curl ca-certificates
   else
     echo "Missing required commands:$missing"
     echo "Install git and curl in this WSL distro, then run this setup again."

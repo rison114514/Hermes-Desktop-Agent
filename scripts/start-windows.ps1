@@ -127,29 +127,15 @@ function Install-WindowsNpmDependencies {
   }
 }
 
-function Get-DefaultWslDistro {
-  $result = Invoke-WslListVerbose
-  if ($result.ExitCode -ne 0) {
-    $message = if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) { $result.Stdout } else { $result.Stderr }
-    throw "Unable to list WSL distros with 'wsl.exe -l -v'. $message"
-  }
+function Test-SystemWslDistro {
+  param([string]$Name)
+  return $Name -match '^docker-desktop(?:-data)?$'
+}
 
-  $lines = $result.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").TrimEnd() }
-  $defaultLine = $lines | Where-Object { $_.TrimStart().StartsWith("*") } | Select-Object -First 1
-  $candidateLine = if ($defaultLine) {
-    $defaultLine
-  } else {
-    $lines | Where-Object {
-      $line = $_.Trim()
-      $line -and $line -notmatch "^NAME\s+STATE\s+VERSION$"
-    } | Select-Object -First 1
-  }
+function Get-WslDistroNameFromLine {
+  param([string]$Line)
 
-  if (-not $candidateLine) {
-    throw "No WSL distro was found. Install a WSL distro or pass -Distro <name>."
-  }
-
-  $clean = $candidateLine.Trim() -replace "^\*\s*", ""
+  $clean = $Line.Trim() -replace "^\*\s*", ""
   $match = [regex]::Match($clean, "^(?<name>.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting|Exporting|Importing)\s+\d+\s*$")
   if ($match.Success) {
     return $match.Groups["name"].Value.Trim()
@@ -160,7 +146,59 @@ function Get-DefaultWslDistro {
     return $parts[0].Trim()
   }
 
-  throw "Unable to parse WSL distro from: $candidateLine"
+  return $null
+}
+
+function Get-DefaultWslDistro {
+  $result = Invoke-WslListVerbose
+  if ($result.ExitCode -ne 0) {
+    $message = if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) { $result.Stdout } else { $result.Stderr }
+    throw "Unable to list WSL distros with 'wsl.exe -l -v'. $message"
+  }
+
+  $lines = $result.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").TrimEnd() }
+  $rows = foreach ($line in $lines) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed -match "^NAME\s+STATE\s+VERSION$") {
+      continue
+    }
+
+    $name = Get-WslDistroNameFromLine $trimmed
+    if ($name) {
+      [pscustomobject]@{
+        Name = $name
+        Default = $trimmed.StartsWith("*")
+        System = Test-SystemWslDistro $name
+      }
+    }
+  }
+
+  $usable = @($rows | Where-Object { -not $_.System })
+  if (-not $usable) {
+    throw "No usable WSL Linux distro was found. Docker Desktop distros are not supported."
+  }
+
+  $defaultUsable = $usable | Where-Object { $_.Default } | Select-Object -First 1
+  if ($defaultUsable) {
+    return $defaultUsable.Name
+  }
+
+  return ($usable | Select-Object -First 1).Name
+}
+
+function Test-WslDistroExists {
+  param([string]$Name)
+
+  $result = Invoke-WslListVerbose
+  if ($result.ExitCode -ne 0) {
+    return $false
+  }
+
+  $lines = $result.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").Trim() }
+  return [bool]($lines | Where-Object {
+    $line = $_ -replace '^\*\s*', ''
+    $line -match ('^' + [regex]::Escape($Name) + '\s+')
+  })
 }
 
 function Invoke-WslListVerbose {
@@ -204,13 +242,116 @@ function Install-WslDefaultDistro {
     if (-not [string]::IsNullOrWhiteSpace($webResult.Stdout)) {
       Write-Host $webResult.Stdout.Trim()
     }
-    if ($webResult.ExitCode -ne 0) {
-      $webMessage = if (-not [string]::IsNullOrWhiteSpace($webResult.Stderr)) { $webResult.Stderr } else { $webResult.Stdout }
-      throw "Automatic WSL installation did not complete. Run 'wsl --install --web-download -d Ubuntu' from an elevated PowerShell, restart Windows if prompted, then launch this script again. $webMessage"
+    if ($webResult.ExitCode -eq 0) {
+      Write-Host "WSL installation command completed. If Windows asks for a reboot, restart and run this launcher again." -ForegroundColor Yellow
+      return
     }
+
+    $webMessage = if (-not [string]::IsNullOrWhiteSpace($webResult.Stderr)) { $webResult.Stderr } else { $webResult.Stdout }
+    if (-not [string]::IsNullOrWhiteSpace($webMessage)) {
+      Write-Host $webMessage.Trim() -ForegroundColor Yellow
+    }
+
+    if (Install-UbuntuWithWinget) {
+      return
+    }
+
+    Import-UbuntuRootfsDistro
   }
 
   Write-Host "WSL installation command completed. If Windows asks for a reboot, restart and run this launcher again." -ForegroundColor Yellow
+}
+
+function Install-UbuntuWithWinget {
+  if (-not (Get-Command "winget.exe" -ErrorAction SilentlyContinue)) {
+    return $false
+  }
+
+  Write-Host "Trying Ubuntu installation through winget..." -ForegroundColor Yellow
+  $result = Invoke-Native "winget.exe" @(
+    "install",
+    "--id",
+    "Canonical.Ubuntu.2404",
+    "-e",
+    "--source",
+    "winget",
+    "--accept-package-agreements",
+    "--accept-source-agreements"
+  )
+  if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) {
+    Write-Host $result.Stdout.Trim()
+  }
+  if ($result.ExitCode -ne 0) {
+    $message = if (-not [string]::IsNullOrWhiteSpace($result.Stderr)) { $result.Stderr } else { $result.Stdout }
+    if (-not [string]::IsNullOrWhiteSpace($message)) {
+      Write-Host "winget Ubuntu installation did not complete. $($message.Trim())" -ForegroundColor Yellow
+    }
+    return $false
+  }
+
+  Write-Host "winget completed. If Ubuntu opens for first-time setup, finish it and launch again." -ForegroundColor Yellow
+  return $true
+}
+
+function Import-UbuntuRootfsDistro {
+  $distroName = "HermesUbuntu"
+  if (Test-WslDistroExists $distroName) {
+    Write-Host "$distroName already exists."
+    return
+  }
+
+  Write-Host "Trying direct Ubuntu WSL rootfs import as a final fallback..." -ForegroundColor Yellow
+  Write-Host "This downloads the official Canonical Ubuntu 24.04 WSL rootfs, then imports it as $distroName." -ForegroundColor Yellow
+
+  $baseDirectory = Join-Path $env:LOCALAPPDATA "HermesDesktopAgent\wsl"
+  $installDirectory = Join-Path $baseDirectory $distroName
+  $downloadDirectory = Join-Path $env:TEMP "HermesDesktopAgent"
+  $archivePath = Join-Path $downloadDirectory "ubuntu-noble-wsl-amd64.rootfs.tar.gz"
+  New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+  New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+
+  $urls = @(
+    "https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz",
+    "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
+  )
+
+  $downloaded = $false
+  foreach ($url in $urls) {
+    Write-Host "Downloading Ubuntu rootfs: $url"
+    $download = Invoke-Native "curl.exe" @("-L", "--fail", "--retry", "2", "--connect-timeout", "20", "-o", $archivePath, $url)
+    if ($download.ExitCode -eq 0 -and (Test-Path $archivePath)) {
+      $downloaded = $true
+      break
+    }
+
+    $message = if (-not [string]::IsNullOrWhiteSpace($download.Stderr)) { $download.Stderr } else { $download.Stdout }
+    if (-not [string]::IsNullOrWhiteSpace($message)) {
+      Write-Host $message.Trim() -ForegroundColor Yellow
+    }
+  }
+
+  if (-not $downloaded) {
+    throw @"
+Automatic Ubuntu installation failed because Microsoft Store/web-download and direct Canonical rootfs download were unavailable.
+Manual fallback:
+1. Download Ubuntu 24.04 WSL rootfs from https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz
+2. Run: wsl --import HermesUbuntu "$installDirectory" "<downloaded-rootfs.tar.gz>" --version 2
+3. Launch Hermes Desktop Agent again.
+"@
+  }
+
+  $import = Invoke-Native "wsl.exe" @("--import", $distroName, $installDirectory, $archivePath, "--version", "2")
+  if ($import.ExitCode -ne 0) {
+    $message = if (-not [string]::IsNullOrWhiteSpace($import.Stderr)) { $import.Stderr } else { $import.Stdout }
+    throw "Downloaded Ubuntu rootfs, but WSL import failed. $message"
+  }
+
+  $setDefault = Invoke-Native "wsl.exe" @("--set-default", $distroName)
+  if ($setDefault.ExitCode -ne 0) {
+    Write-Host "Imported $distroName, but could not set it as default. The launcher will still detect it." -ForegroundColor Yellow
+  }
+
+  Write-Host "Imported Ubuntu as WSL distro: $distroName"
 }
 
 function Ensure-WslReady {
@@ -225,7 +366,10 @@ function Ensure-WslReady {
   $hasDistro = $false
   if ($list.ExitCode -eq 0) {
     $lines = $list.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").Trim() }
-    $hasDistro = [bool]($lines | Where-Object { $_ -and $_ -notmatch "^NAME\s+STATE\s+VERSION$" })
+    $hasDistro = [bool]($lines | Where-Object {
+      $name = Get-WslDistroNameFromLine $_
+      $name -and -not (Test-SystemWslDistro $name)
+    })
   }
 
   if (-not $hasDistro) {
@@ -312,8 +456,18 @@ for cmd in git curl bash; do
 done
 if [ -n "$missing" ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y git curl ca-certificates
+    run_apt() {
+      if [ "$(id -u)" -eq 0 ]; then
+        apt-get "$@"
+      elif command -v sudo >/dev/null 2>&1; then
+        sudo apt-get "$@"
+      else
+        echo "Missing sudo and current user is not root. Install git and curl in this WSL distro, then run the launcher again."
+        exit 1
+      fi
+    }
+    run_apt update
+    run_apt install -y git curl ca-certificates
   else
     echo "Missing required commands:$missing"
     echo "Install git and curl in this WSL distro, then run the launcher again."
