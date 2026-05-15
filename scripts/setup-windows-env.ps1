@@ -108,7 +108,11 @@ function Get-WindowsOptionalFeatureState {
 function Enable-WslPlatformFeaturesIfNeeded {
   $virtualMachinePlatformState = Get-WindowsOptionalFeatureState "VirtualMachinePlatform"
   if ($virtualMachinePlatformState -ne "Enabled") {
-    Enable-HyperVPackagesIfAvailable
+    if (Enable-HyperVPackagesIfAvailable) {
+      Write-Host ""
+      Write-Host "Hyper-V platform packages were prepared. Restart Windows, then run this setup again." -ForegroundColor Yellow
+      return $true
+    }
   }
 
   $features = @(
@@ -157,8 +161,20 @@ Required features:
 
     if ($result.ExitCode -ne 0) {
       $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
+      if ($message -match "0xc1900401") {
+        throw @"
+Failed to enable $($feature.Label): DISM returned 0xc1900401.
+This usually means Windows has a pending component/update transaction. Restart Windows, then run this setup again.
+
+$message
+"@
+      }
       throw "Failed to enable $($feature.Label). $message"
     }
+
+    Write-Host ""
+    Write-Host "$($feature.Label) was enabled. Restart Windows, then run this setup again." -ForegroundColor Yellow
+    return $true
   }
 
   Write-Host ""
@@ -168,21 +184,22 @@ Required features:
 
 function Enable-HyperVPackagesIfAvailable {
   if (-not (Test-Administrator)) {
-    return
+    return $false
   }
 
   $hyperVState = Get-WindowsOptionalFeatureState "Microsoft-Hyper-V-All"
   if ($hyperVState -eq "Enabled") {
-    return
+    return $false
   }
 
   $packagesDirectory = Join-Path $env:SystemRoot "servicing\Packages"
   $packages = @(Get-ChildItem -Path $packagesDirectory -Filter "*Hyper-V*.mum" -ErrorAction SilentlyContinue)
   if (-not $packages) {
     Write-Host "Hyper-V package manifests were not found. Continuing with standard WSL feature enablement." -ForegroundColor Yellow
-    return
+    return $false
   }
 
+  $changed = $false
   Write-Host "Preparing Hyper-V platform packages for Windows Home compatibility..." -ForegroundColor Yellow
   foreach ($package in $packages) {
     $result = Invoke-Native "dism.exe" @(
@@ -194,6 +211,8 @@ function Enable-HyperVPackagesIfAvailable {
     if ($result.ExitCode -ne 0) {
       $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
       Write-Host "Skipping Hyper-V package $($package.Name). $message" -ForegroundColor Yellow
+    } else {
+      $changed = $true
     }
   }
 
@@ -210,7 +229,10 @@ function Enable-HyperVPackagesIfAvailable {
   if ($enable.ExitCode -ne 0) {
     $message = if ($enable.Stderr) { $enable.Stderr } else { $enable.Stdout }
     Write-Host "Hyper-V platform feature could not be fully enabled. Continuing with Virtual Machine Platform. $message" -ForegroundColor Yellow
+    return $changed
   }
+
+  return $true
 }
 
 function Invoke-WslListVerbose {
