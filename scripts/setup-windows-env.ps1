@@ -105,6 +105,49 @@ function Get-WindowsOptionalFeatureState {
   }
 }
 
+function Get-NativeOutputText {
+  param($Result)
+
+  $parts = @($Result.Stdout, $Result.Stderr) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    ForEach-Object { $_.Trim() }
+
+  return ($parts -join "`n")
+}
+
+function Test-DismSuccess {
+  param($Result)
+
+  $output = Get-NativeOutputText $Result
+  return $Result.ExitCode -eq 0 `
+    -or $Result.ExitCode -eq 3010 `
+    -or $output -match "The operation completed successfully" `
+    -or $output -match "操作成功完成"
+}
+
+function Assert-DismSuccess {
+  param(
+    [string]$Label,
+    $Result
+  )
+
+  if (Test-DismSuccess $Result) {
+    return
+  }
+
+  $message = Get-NativeOutputText $Result
+  if ($message -match "0xc1900401") {
+    throw @"
+Failed to enable ${Label}: DISM returned 0xc1900401.
+This usually means Windows has a pending component/update transaction. Restart Windows, then run this setup again.
+
+$message
+"@
+  }
+
+  throw "Failed to enable $Label. $message"
+}
+
 function Enable-WslPlatformFeaturesIfNeeded {
   $virtualMachinePlatformState = Get-WindowsOptionalFeatureState "VirtualMachinePlatform"
   if ($virtualMachinePlatformState -ne "Enabled") {
@@ -159,18 +202,7 @@ Required features:
       "/norestart"
     )
 
-    if ($result.ExitCode -ne 0) {
-      $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
-      if ($message -match "0xc1900401") {
-        throw @"
-Failed to enable $($feature.Label): DISM returned 0xc1900401.
-This usually means Windows has a pending component/update transaction. Restart Windows, then run this setup again.
-
-$message
-"@
-      }
-      throw "Failed to enable $($feature.Label). $message"
-    }
+    Assert-DismSuccess $feature.Label $result
 
     Write-Host ""
     Write-Host "$($feature.Label) was enabled. Restart Windows, then run this setup again." -ForegroundColor Yellow
@@ -208,11 +240,11 @@ function Enable-HyperVPackagesIfAvailable {
       "/add-package:$($package.FullName)"
     )
 
-    if ($result.ExitCode -ne 0) {
-      $message = if ($result.Stderr) { $result.Stderr } else { $result.Stdout }
-      Write-Host "Skipping Hyper-V package $($package.Name). $message" -ForegroundColor Yellow
-    } else {
+    if (Test-DismSuccess $result) {
       $changed = $true
+    } else {
+      $message = Get-NativeOutputText $result
+      Write-Host "Skipping Hyper-V package $($package.Name). $message" -ForegroundColor Yellow
     }
   }
 
@@ -226,8 +258,8 @@ function Enable-HyperVPackagesIfAvailable {
     "/norestart"
   )
 
-  if ($enable.ExitCode -ne 0) {
-    $message = if ($enable.Stderr) { $enable.Stderr } else { $enable.Stdout }
+  if (-not (Test-DismSuccess $enable)) {
+    $message = Get-NativeOutputText $enable
     Write-Host "Hyper-V platform feature could not be fully enabled. Continuing with Virtual Machine Platform. $message" -ForegroundColor Yellow
     return $changed
   }
