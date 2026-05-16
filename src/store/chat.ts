@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { HermesPermissionRequest } from '../../electron/hermes-bridge'
 
 export interface ToolCallState {
   toolName: string
@@ -26,8 +27,11 @@ interface ChatStore {
   draft: string
   activeAssistantId: string | null
   connectionLabel: string
+  permissionRequests: HermesPermissionRequest[]
   setDraft: (draft: string) => void
   addMessage: (message: Message) => void
+  addPermissionRequest: (request: HermesPermissionRequest) => void
+  removePermissionRequest: (requestId: string) => void
   upsertToolMessage: (toolMessage: ToolCallState) => void
   setActiveAssistant: (id: string | null) => void
   touchAssistantMessage: (id?: string | null) => string | null
@@ -89,8 +93,20 @@ export const useChatStore = create<ChatStore>((set) => ({
   draft: '',
   activeAssistantId: null,
   connectionLabel: '空闲',
+  permissionRequests: [],
   setDraft: (draft) => set({ draft }),
   addMessage: (message) => set((state) => ({ messages: [...state.messages, { kind: 'text', ...message }] })),
+  addPermissionRequest: (request) =>
+    set((state) => ({
+      permissionRequests: [
+        ...state.permissionRequests.filter((item) => item.requestId !== request.requestId),
+        request,
+      ],
+    })),
+  removePermissionRequest: (requestId) =>
+    set((state) => ({
+      permissionRequests: state.permissionRequests.filter((request) => request.requestId !== requestId),
+    })),
   upsertToolMessage: (toolMessage) =>
     set((state) => {
       const normalizedTool = {
@@ -214,6 +230,7 @@ export const useChatStore = create<ChatStore>((set) => ({
       draft: '',
       activeAssistantId: null,
       connectionLabel: 'Ready',
+      permissionRequests: [],
     })),
   resetForSession: (label) =>
     set({
@@ -230,5 +247,6 @@ export const useChatStore = create<ChatStore>((set) => ({
       draft: '',
       activeAssistantId: null,
       connectionLabel: 'Ready',
+      permissionRequests: [],
     }),
 }))

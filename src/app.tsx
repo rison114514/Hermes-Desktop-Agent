@@ -17,6 +17,7 @@ export default function App() {
   const setSkills = useSkillsStore((state) => state.setSkills)
   const setCommands = useSkillsStore((state) => state.setCommands)
   const addMessage = useChatStore((state) => state.addMessage)
+  const addPermissionRequest = useChatStore((state) => state.addPermissionRequest)
   const appendChunk = useChatStore((state) => state.appendChunk)
   const finalizeMessage = useChatStore((state) => state.finalizeMessage)
   const replaceMessage = useChatStore((state) => state.replaceMessage)
@@ -154,6 +155,12 @@ export default function App() {
         return
       }
 
+      if (event.type === 'permission:request') {
+        addPermissionRequest(event.payload)
+        setConnectionLabel('Hermes is waiting for permission')
+        return
+      }
+
       if (event.type === 'status') {
         const currentAssistantId = useChatStore.getState().activeAssistantId
         if (event.payload.stage === 'ready' && event.payload.detail.startsWith('Loaded Hermes ACP session') && currentAssistantId) {
@@ -193,6 +200,7 @@ export default function App() {
     })
   }, [
     addMessage,
+    addPermissionRequest,
     appendChunk,
     finalizeMessage,
     replaceMessage,

@@ -2,9 +2,11 @@ import { Sparkles } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
+import { PermissionRequestCard } from './PermissionRequestCard'
 
 export function ChatPanel() {
   const connectionLabel = useChatStore((state) => state.connectionLabel)
+  const permissionRequests = useChatStore((state) => state.permissionRequests)
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.14),transparent_42%)]">
@@ -20,6 +22,15 @@ export function ChatPanel() {
       </div>
 
       <MessageList />
+      {permissionRequests.length ? (
+        <div className="border-t border-white/10 px-6 py-4">
+          <div className="space-y-3">
+            {permissionRequests.map((request) => (
+              <PermissionRequestCard key={request.requestId} request={request} />
+            ))}
+          </div>
+        </div>
+      ) : null}
       <InputBar />
     </section>
   )

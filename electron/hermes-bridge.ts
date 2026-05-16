@@ -11,6 +11,7 @@ export type HermesBridgeEvent =
   | { type: 'assistant:delta'; payload: { id?: string; delta: string } }
   | { type: 'assistant:done'; payload: { id?: string; reason?: string; text?: string } }
   | { type: 'tool'; payload: { id?: string; name: string; args?: string; result?: string; status: 'running' | 'completed' } }
+  | { type: 'permission:request'; payload: HermesPermissionRequest }
   | { type: 'commands'; payload: HermesCommandInfo[] }
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
@@ -34,6 +35,24 @@ export type HermesPermissionOutcome =
   | { outcome: 'cancelled' }
 
 export type HermesPermissionHandler = (payload: unknown) => Promise<HermesPermissionOutcome> | HermesPermissionOutcome
+
+export type HermesPermissionOption = {
+  optionId: string
+  name: string
+  kind?: string
+}
+
+export type HermesPermissionRequest = {
+  requestId: string
+  sessionId?: string
+  toolCallId?: string
+  title: string
+  description?: string
+  command?: string
+  toolKind?: string
+  options: HermesPermissionOption[]
+  detail: string
+}
 
 type JsonRpcMessage = {
   jsonrpc?: '2.0'

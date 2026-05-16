@@ -421,7 +421,8 @@ function New-WslScriptFile {
   $tempDirectory = Join-Path $repoRoot ".hermes-tmp"
   New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
   $windowsPath = Join-Path $tempDirectory ("wsl-" + [guid]::NewGuid().ToString("N") + ".sh")
-  [System.IO.File]::WriteAllText($windowsPath, $Script, $utf8NoBom)
+  $lfScript = ($Script -replace "`r`n", "`n") -replace "`r", "`n"
+  [System.IO.File]::WriteAllText($windowsPath, $lfScript, $utf8NoBom)
 
   return [pscustomobject]@{
     WindowsPath = $windowsPath

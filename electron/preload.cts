@@ -4,6 +4,8 @@ import type { HermesBridgeEvent } from './hermes-bridge.js'
 const api = {
   sendMessage: (message: string) => ipcRenderer.invoke('hermes:send-message', message),
   cancelMessage: () => ipcRenderer.invoke('hermes:cancel-message'),
+  respondHermesPermission: (requestId: string, optionId?: string | null) =>
+    ipcRenderer.invoke('hermes:permission-response', requestId, optionId),
   onHermesEvent: (listener: (event: HermesBridgeEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: HermesBridgeEvent) => {
       listener(payload)

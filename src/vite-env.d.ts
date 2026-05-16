@@ -40,6 +40,7 @@ declare global {
     hermesDesktop: {
       sendMessage: (message: string) => Promise<{ ok: boolean }>
       cancelMessage: () => Promise<{ ok: boolean; cancelled: boolean }>
+      respondHermesPermission: (requestId: string, optionId?: string | null) => Promise<{ ok: boolean; error?: string }>
       onHermesEvent: (listener: (event: HermesBridgeEvent) => void) => () => void
       listHermesSessions: () => Promise<Array<{
         sessionId: string

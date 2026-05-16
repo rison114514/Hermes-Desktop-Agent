@@ -20,7 +20,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if "%EXIT_CODE%"=="3010" (
   echo.
-  echo WSL platform features were enabled. Please restart Windows, then run this setup again.
+  echo Windows virtualization or WSL features were changed. Please restart Windows, then run this setup again.
   echo Press any key to close this window.
   pause >nul
   exit /b 3010

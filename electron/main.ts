@@ -3,7 +3,7 @@ import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessa
 import { access, readFile, rename, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOutcome } from './hermes-bridge.js'
+import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOption, type HermesPermissionOutcome, type HermesPermissionRequest } from './hermes-bridge.js'
 import {
   canPreviewFile,
   FILE_PREVIEW_MAX_CHARS,
@@ -33,6 +33,8 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const hermesBridge = new HermesBridge()
 hermesBridge.setPermissionHandler((payload) => requestHermesPermission(payload))
+const pendingPermissionRequests = new Map<string, (outcome: HermesPermissionOutcome) => void>()
+let permissionRequestSequence = 0
 let bridgeBound = false
 let isQuitting = false
 let workspaceRoot = process.cwd()
@@ -233,6 +235,17 @@ ipcMain.handle('hermes:send-message', async (_event, message: string) => {
 
 ipcMain.handle('hermes:cancel-message', async () => {
   return hermesBridge.cancelActivePrompt()
+})
+
+ipcMain.handle('hermes:permission-response', async (_event, requestId: string, optionId?: string | null) => {
+  const resolve = pendingPermissionRequests.get(requestId)
+  if (!resolve) {
+    return { ok: false, error: 'Permission request was not found or already resolved.' }
+  }
+
+  pendingPermissionRequests.delete(requestId)
+  resolve(optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' })
+  return { ok: true }
 })
 
 ipcMain.handle('hermes:list-sessions', async () => {
@@ -622,54 +635,60 @@ function updateTrayMenu() {
 }
 
 async function requestHermesPermission(payload: unknown): Promise<HermesPermissionOutcome> {
-  const options = readPermissionOptions(payload)
-  const allowOption = findPermissionOption(options, ['allow', 'approve', 'yes'])
-  const denyOption = findPermissionOption(options, ['deny', 'reject', 'cancel', 'no'])
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { outcome: 'cancelled' }
+  }
+
+  const request = createPermissionRequest(payload)
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      if (pendingPermissionRequests.delete(request.requestId)) {
+        resolve({ outcome: 'cancelled' })
+      }
+    }, 10 * 60 * 1000)
+
+    pendingPermissionRequests.set(request.requestId, (outcome) => {
+      clearTimeout(timeout)
+      resolve(outcome)
+    })
+
+    mainWindow?.webContents.send('hermes:event', {
+      type: 'permission:request',
+      payload: request,
+    } satisfies HermesBridgeEvent)
+  })
+}
+
+function createPermissionRequest(payload: unknown): HermesPermissionRequest {
+  const record = asRecord(payload)
+  const toolCall = asRecord(readUnknown(record, 'toolCall', 'tool_call'))
+  const rawInput = asRecord(readUnknown(toolCall, 'rawInput', 'raw_input'))
+  const options = readPermissionOptions(record)
+  const requestId = `permission-${++permissionRequestSequence}-${Date.now()}`
+  const title = readString(toolCall, 'title') ?? readString(record, 'title') ?? 'Permission required'
+  const description = readString(rawInput, 'description') ?? readString(toolCall, 'description') ?? readString(record, 'description')
+  const command = readString(rawInput, 'command')
   const detail = createPermissionDetail(payload)
-  const result = mainWindow
-    ? await dialog.showMessageBox(mainWindow, {
-        type: 'warning',
-        title: 'Hermes permission request',
-        message: 'Hermes is requesting permission to continue.',
-        detail,
-        buttons: ['Deny', 'Allow'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      })
-    : await dialog.showMessageBox({
-        type: 'warning',
-        title: 'Hermes permission request',
-        message: 'Hermes is requesting permission to continue.',
-        detail,
-        buttons: ['Deny', 'Allow'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      })
 
-  if (result.response === 1 && allowOption) {
-    return { outcome: 'selected', optionId: allowOption.optionId }
+  return {
+    requestId,
+    sessionId: readString(record, 'sessionId', 'session_id'),
+    toolCallId: readString(toolCall, 'toolCallId', 'tool_call_id'),
+    title,
+    description,
+    command,
+    toolKind: readString(toolCall, 'kind'),
+    options,
+    detail,
   }
-
-  if (result.response === 0 && denyOption) {
-    return { outcome: 'selected', optionId: denyOption.optionId }
-  }
-
-  return { outcome: 'cancelled' }
 }
 
-type PermissionOption = {
-  optionId: string
-  name?: string
-}
-
-function readPermissionOptions(payload: unknown): PermissionOption[] {
-  if (!payload || typeof payload !== 'object') {
+function readPermissionOptions(record: Record<string, unknown> | null): HermesPermissionOption[] {
+  if (!record) {
     return []
   }
 
-  const options = (payload as Record<string, unknown>).options
+  const options = record.options
   if (!Array.isArray(options)) {
     return []
   }
@@ -680,17 +699,38 @@ function readPermissionOptions(payload: unknown): PermissionOption[] {
     }
 
     const record = option as Record<string, unknown>
-    return typeof record.optionId === 'string'
-      ? [{ optionId: record.optionId, name: typeof record.name === 'string' ? record.name : undefined }]
+    const optionId = readString(record, 'optionId', 'option_id')
+    return optionId
+      ? [{
+          optionId,
+          name: readString(record, 'name') ?? optionId,
+          kind: readString(record, 'kind'),
+        }]
       : []
   })
 }
 
-function findPermissionOption(options: PermissionOption[], keywords: string[]) {
-  return options.find((option) => {
-    const haystack = `${option.optionId} ${option.name ?? ''}`.toLowerCase()
-    return keywords.some((keyword) => haystack.includes(keyword))
-  })
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function readUnknown(record: Record<string, unknown> | null, ...keys: string[]) {
+  if (!record) {
+    return undefined
+  }
+
+  for (const key of keys) {
+    if (record[key] !== undefined) {
+      return record[key]
+    }
+  }
+
+  return undefined
+}
+
+function readString(record: Record<string, unknown> | null, ...keys: string[]) {
+  const value = readUnknown(record, ...keys)
+  return typeof value === 'string' ? value : undefined
 }
 
 function createPermissionDetail(payload: unknown) {
