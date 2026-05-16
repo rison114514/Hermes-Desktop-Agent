@@ -11,6 +11,11 @@ type SlashSuggestion = {
   source: 'command' | 'skill'
 }
 
+type PastePayload = {
+  summary: string
+  text: string
+}
+
 const PASTE_SUMMARY_THRESHOLD = 800
 const INPUT_MIN_HEIGHT = 48
 const INPUT_MAX_HEIGHT = 260
@@ -37,6 +42,7 @@ function describeSource(source: SlashSuggestion['source']) {
 
 export function InputBar() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const pastePayloadsRef = useRef<PastePayload[]>([])
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
   const [showSlashSuggestions, setShowSlashSuggestions] = useState(false)
   const draft = useChatStore((state) => state.draft)
@@ -114,21 +120,22 @@ export function InputBar() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
 
-    const content = draft.trim()
-    if (!content) {
+    const displayContent = draft.trim()
+    if (!displayContent) {
       return
     }
 
-    const slash = parseSlashDraft(content)
+    const slash = parseSlashDraft(displayContent)
     if (slash && !slash.query) {
       setConnectionLabel('Please choose or type a Hermes command after /.')
       return
     }
 
+    const content = expandPasteSummaries(displayContent).trim()
     const userId = createId('user')
     const assistantId = createId('assistant')
 
-    addMessage({ id: userId, role: 'user', content })
+    addMessage({ id: userId, role: 'user', content: displayContent })
     addMessage({
       id: assistantId,
       role: 'assistant',
@@ -139,6 +146,7 @@ export function InputBar() {
     setActiveAssistant(assistantId)
     setConnectionLabel(slash ? `Sending Hermes command /${slash.query}` : 'Sending message to Hermes')
     setDraft('')
+    pastePayloadsRef.current = []
 
     if (!window.hermesDesktop) {
       replaceMessage(assistantId, 'Desktop bridge is not available.')
@@ -176,11 +184,30 @@ export function InputBar() {
     const nextDraft = `${draft.slice(0, selectionStart)}${summary}${draft.slice(selectionEnd)}`
     const nextCursor = selectionStart + summary.length
 
+    pastePayloadsRef.current = [
+      ...pastePayloadsRef.current.filter((payload) => nextDraft.includes(payload.summary)),
+      { summary, text },
+    ]
     setDraft(nextDraft)
     setShowSlashSuggestions(Boolean(parseSlashDraft(nextDraft)))
     window.setTimeout(() => {
       textareaRef.current?.setSelectionRange(nextCursor, nextCursor)
     }, 0)
+  }
+
+  const expandPasteSummaries = (value: string) => {
+    let expanded = value
+
+    for (const payload of pastePayloadsRef.current) {
+      const index = expanded.indexOf(payload.summary)
+      if (index === -1) {
+        continue
+      }
+
+      expanded = `${expanded.slice(0, index)}${payload.text}${expanded.slice(index + payload.summary.length)}`
+    }
+
+    return expanded
   }
 
   const handleCancel = async () => {
@@ -279,6 +306,9 @@ export function InputBar() {
             ref={textareaRef}
             value={draft}
             onChange={(event) => {
+              pastePayloadsRef.current = pastePayloadsRef.current.filter((payload) =>
+                event.target.value.includes(payload.summary),
+              )
               setDraft(event.target.value)
               setShowSlashSuggestions(Boolean(parseSlashDraft(event.target.value)))
             }}
