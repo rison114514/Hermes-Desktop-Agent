@@ -1,84 +1,94 @@
 # Hermes Desktop Agent
 
-Hermes Desktop Agent 是一个运行在 Windows 上的 Hermes 桌面助手。它使用 Windows 原生 Electron 界面，后台通过 WSL2 启动 Hermes ACP，因此既保留了 Windows 桌面体验，也能继续使用 Hermes 在 Linux/WSL 中的模型、技能和工具执行环境。
+Hermes Desktop Agent 是一个运行在 Windows 上的 Hermes 桌面助手。界面由 Electron 提供，后端通过 WSL2 启动 Hermes ACP，因此可以同时获得 Windows 桌面体验和 Hermes 在 Linux/WSL 中的工具、技能、模型配置能力。
 
-它适合用来：
+它可以用于：
 
-- 在桌面端和 Hermes 对话。
+- 和 Hermes 进行桌面对话。
 - 加载、恢复和继续历史 session。
 - 查看和操作当前工作区文件。
-- 使用 Hermes 的内置命令、skills、工具调用和多轮任务能力。
+- 使用 Hermes 内置命令、skills、工具调用和多轮任务能力。
 
-## 使用方式
+## 推荐使用路径
 
-### 1. 推荐下载 Release 版
+### 1. 先配置环境
 
-普通用户推荐下载 Release 包，然后直接运行：
+首次使用前，建议先右键管理员运行：
+
+```text
+setup-hermes-environment.cmd
+```
+
+该脚本会检查并引导配置：
+
+- Windows WSL/虚拟化相关功能。
+- Ubuntu WSL 发行版。
+- WSL 内的 Hermes。
+- Hermes model/provider 配置，默认引导 DeepSeek。
+
+如果脚本提示需要重启 Windows，请重启后再次运行 `setup-hermes-environment.cmd`。
+
+### 2. 环境成功后启动桌面助手
+
+普通用户优先下载 GitHub Release 里的 EXE：
 
 ```text
 Hermes Desktop Agent-0.1.0-x64.exe
 ```
 
-Release 版已经内置桌面前端运行时，不需要在宿主机安装 Node.js 或 npm。
-启动后会自动检测可用的 WSL Linux 发行版；如果只检测到 Docker Desktop 的内部发行版，会尝试安装默认 Ubuntu。
-如果想在启动桌面端前先检查环境，可以先运行 `setup-hermes-environment.cmd`，它会检测 WSL、Ubuntu、Hermes 和 Hermes model/provider 配置。
+Release EXE 已经打包好前端和 Electron 运行时，通常不需要用户在 Windows 宿主机安装 Node.js 或 npm。
 
-### 2. 准备环境
-
-普通用户需要：
-
-- Windows 11，或支持 WSL2 的 Windows 10+。
-- PowerShell 5.1 或 PowerShell 7+。
-
-开发者从源码运行时额外需要：
-
-- Node.js 20+。
-- npm 10+。
-
-### 3. 从源码一键启动
-
-如果下载的是源码 ZIP 包，解压后双击：
+如果你下载的是源码 ZIP，或想从源码本地启动，也可以双击：
 
 ```text
 start-hermes-desktop.cmd
 ```
 
-脚本会自动完成这些事情：
+源码启动会自动执行：
 
-1. 检查 WSL 是否可用；如果没有可用发行版，会尝试安装默认 Ubuntu。
-2. 自动检测当前 WSL 发行版。
-3. 检查 WSL 内是否安装 Hermes；缺失时会尝试下载并安装。
-4. 检查 Hermes model/provider 配置；未配置时会打开 `hermes model` 引导。
-5. 安装 Windows 侧 npm 依赖。
-6. 构建并启动桌面助手。
+- 检测本地 Node.js/npm。
+- 检测 WSL 和 Hermes。
+- 自动 `npm install` 或 `npm ci`。
+- 自动构建前端和 Electron 主进程。
+- 启动桌面助手。
 
-如果安装 WSL 后提示需要重启 Windows，请重启后再次双击 `start-hermes-desktop.cmd`。
+源码启动要求 Windows 宿主机安装 Node.js 20+。如果没有安装，请到中文官网下载安装：
 
-### 4. 配置模型
+```text
+https://nodejs.cn/download/
+```
 
-首次运行时，如果 Hermes 还没有配置模型，启动脚本会进入：
+## 模型配置
+
+首次运行时，如果 Hermes 尚未配置模型，环境脚本会提示粘贴 DeepSeek API Key。也可以跳过，之后在 Ubuntu/WSL 中自行运行：
 
 ```bash
 hermes model
 ```
 
-按终端提示选择 provider、填写 API key、选择模型即可。以 DeepSeek 为例：
+DeepSeek 参考配置：
 
 - Provider: `DeepSeek`
 - Base URL: `https://api.deepseek.com`
 - Model: `deepseek-v4-pro`
 
-API key 由 Hermes 自己保存；桌面助手不会显示或额外保存你的 key。
+API Key 由 Hermes 自己保存，桌面助手不会额外保存或展示你的 key。
 
 ## 常用命令
 
-普通启动：
+管理员环境检测：
+
+```powershell
+.\setup-hermes-environment.cmd
+```
+
+源码本地启动：
 
 ```powershell
 .\start-hermes-desktop.cmd
 ```
 
-指定 WSL 发行版：
+指定 WSL 发行版启动：
 
 ```powershell
 .\scripts\start-windows.ps1 -Distro Ubuntu
@@ -88,12 +98,6 @@ API key 由 Hermes 自己保存；桌面助手不会显示或额外保存你的 
 
 ```powershell
 .\scripts\start-windows.ps1 -Build
-```
-
-跳过自动安装和模型引导，只检查并启动：
-
-```powershell
-.\scripts\start-windows.ps1 -SkipBootstrap
 ```
 
 开发模式：
@@ -108,13 +112,16 @@ npm run dev
 npm run build
 ```
 
+打包 Windows Release：
+
+```powershell
+npm run dist:win
+```
+
 ## 常见问题
 
-- 普通用户优先下载 Release 版，不需要安装 Node.js/npm。
-- 首次使用前可先运行 `setup-hermes-environment.cmd` 完成 WSL 与 Hermes 环境检查。
-- 源码 ZIP 用户需要宿主机安装 Node.js/npm，然后双击启动脚本。
-- Windows 侧依赖需要在 Windows PowerShell 中安装，不能复用 WSL 内的 `node_modules`。
-- 如果 GitHub 下载较慢或失败，脚本会尝试使用镜像源；如果仍失败，请检查当前网络是否能从 WSL 内访问外网。
-- 如果安装 Ubuntu 时 Microsoft Store 返回 403 或下载失败，程序会自动尝试 `wsl --install --web-download -d Ubuntu`。
-- Docker Desktop 自带的 `docker-desktop` / `docker-desktop-data` 不是普通 Linux 工作环境，不能用于运行 Hermes；请安装 Ubuntu 等常规 WSL 发行版。
-- 如果历史 session 无法恢复，先确认 WSL 内 Hermes 能正常执行 `hermes config check` 和 `hermes doctor`。
+- 普通用户建议先运行 `setup-hermes-environment.cmd`，确认 WSL/Hermes 可用后再使用 Release EXE。
+- 源码 ZIP 用户如果运行 `start-hermes-desktop.cmd`，必须先安装 Windows 版 Node.js 20+。
+- WSL 内的 Node.js 不能替代 Windows 宿主机 Node.js；源码前端构建需要 Windows 侧 Node/npm。
+- Docker Desktop 自带的 `docker-desktop` / `docker-desktop-data` 不是普通 Linux 工作环境，不能用于运行 Hermes。
+- 如果 Microsoft Store 安装 Ubuntu 失败，先关闭代理/VPN，再从 Microsoft Store 安装 Ubuntu，并首次打开 Ubuntu 完成初始化。

@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Distro,
   [switch]$AutoDetectDistro,
   [switch]$Build,
@@ -27,6 +27,45 @@ function Require-Command {
 
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw "$Name was not found. $InstallHint"
+  }
+}
+
+function Require-NodeRuntime {
+  if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+    throw @"
+Windows 宿主机没有检测到 Node.js。
+
+如果你是普通用户，建议先运行 setup-hermes-environment.cmd 完成环境配置，然后下载并运行 Release EXE。
+
+如果你要从源码 ZIP / git clone 本地启动，请先安装 Windows 版 Node.js 20+：
+https://nodejs.cn/download/
+
+安装完成后重新打开终端，再运行 start-hermes-desktop.cmd。
+"@
+  }
+
+  $versionText = (& node --version 2>$null).Trim()
+  $major = 0
+  if ($versionText -match '^v(?<major>\d+)') {
+    $major = [int]$matches.major
+  }
+
+  if ($major -lt 20) {
+    throw @"
+当前 Windows Node.js 版本过低：$versionText
+
+源码启动需要 Node.js 20+。请安装新版 Windows Node.js：
+https://nodejs.cn/download/
+"@
+  }
+
+  if (-not (Get-Command "npm" -ErrorAction SilentlyContinue)) {
+    throw @"
+Windows 宿主机没有检测到 npm。
+
+npm 通常会随 Node.js 一起安装。请重新安装 Windows 版 Node.js 20+：
+https://nodejs.cn/download/
+"@
   }
 }
 
@@ -556,8 +595,7 @@ hermes config check
   }
 }
 
-Require-Command "node" "Install Node.js 20+ for Windows."
-Require-Command "npm" "Install npm 10+ for Windows."
+Require-NodeRuntime
 
 if (-not $SkipBootstrap) {
   Invoke-Step "Checking WSL availability" {
