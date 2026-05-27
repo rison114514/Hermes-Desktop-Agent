@@ -41,6 +41,9 @@ export default function App() {
     void window.hermesDesktop.getHermesSkills().then(setSkills).catch(() => {
       // 当 preload bridge 不可用时，保留默认技能列表。
     })
+    void window.hermesDesktop.getHermesCommands().then(setCommands).catch(() => {
+      // 当 preload bridge 不可用时，保留默认命令列表。
+    })
 
     void window.hermesDesktop.getWindowState().then(setWindowState).catch(() => {
       // 当 IPC 不可用时，保留默认窗口状态。

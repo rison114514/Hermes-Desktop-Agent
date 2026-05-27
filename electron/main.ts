@@ -194,11 +194,23 @@ function registerShortcuts() {
   })
 }
 
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    showAndFocusWindow()
+  })
+}
+
 app.whenReady().then(async () => {
   await restoreWorkspaceRoot()
   void createWindow()
   createTray()
   registerShortcuts()
+
+  void hermesBridge.start().catch((error) => {
+    console.warn('[hermes] backend warm-up failed', error instanceof Error ? error.message : error)
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -459,6 +471,10 @@ ipcMain.handle('hermes:get-skills', async () => {
   return readHermesSkillsSnapshot()
 })
 
+ipcMain.handle('hermes:get-commands', async () => {
+  return hermesBridge.getCachedCommands()
+})
+
 ipcMain.handle('windows:reveal-workspace', async () => {
   const cwd = workspaceRoot
 
@@ -540,7 +556,7 @@ ipcMain.handle('window:hide', async () => {
 
 ipcMain.handle('window:close', async () => {
   isQuitting = true
-  mainWindow?.close()
+  app.quit()
   return { ok: true }
 })
 

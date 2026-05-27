@@ -141,6 +141,23 @@ function Invoke-Npm {
 }
 
 function Test-WindowsNpmDependencies {
+  $stampPath = Join-Path $repoRoot ".hermes-install-stamp"
+  if (-not (Test-Path $stampPath)) {
+    return $false
+  }
+
+  $stampTime = (Get-Item $stampPath).LastWriteTime
+  $packageJson = Join-Path $repoRoot "package.json"
+  $packageLock = Join-Path $repoRoot "package-lock.json"
+
+  if ((Get-Item $packageJson).LastWriteTime -gt $stampTime) {
+    return $false
+  }
+
+  if ((Test-Path $packageLock) -and (Get-Item $packageLock).LastWriteTime -gt $stampTime) {
+    return $false
+  }
+
   $requiredBins = @(
     "node_modules\.bin\vite.cmd",
     "node_modules\.bin\cross-env.cmd",
@@ -158,11 +175,16 @@ function Test-WindowsNpmDependencies {
 
 function Install-WindowsNpmDependencies {
   Invoke-Step "Installing Windows npm dependencies" {
+    $stampPath = Join-Path $repoRoot ".hermes-install-stamp"
+    Remove-Item $stampPath -Force -ErrorAction SilentlyContinue
+
     if (Test-Path (Join-Path $repoRoot "package-lock.json")) {
       Invoke-Npm @("ci")
     } else {
       Invoke-Npm @("install")
     }
+
+    New-Item -ItemType File -Path $stampPath -Force | Out-Null
   }
 }
 
@@ -633,17 +655,57 @@ Invoke-Step "Checking Hermes ACP in WSL" {
 }
 
 if (-not (Test-WindowsNpmDependencies)) {
-  Write-Host "Windows npm dependencies are missing or incomplete." -ForegroundColor Yellow
+  Write-Host "Windows npm dependencies are missing, outdated, or incomplete." -ForegroundColor Yellow
   Install-WindowsNpmDependencies
 }
 
-$rendererBuilt = Test-Path (Join-Path $repoRoot "dist\index.html")
-$mainBuilt = Test-Path (Join-Path $repoRoot "dist-electron\electron\main.js")
-
-if ($Build -or -not ($rendererBuilt -and $mainBuilt)) {
-  Invoke-Step "Building renderer and Electron main process" {
-    Invoke-Npm @("run", "build")
+function Test-BuildCurrent {
+  $stampPath = Join-Path $repoRoot ".hermes-build-stamp"
+  if (-not (Test-Path $stampPath)) {
+    return $false
   }
+
+  $stampTime = (Get-Item $stampPath).LastWriteTime
+  $srcDirs = @("src", "electron")
+  $srcFiles = Get-ChildItem -Path ($srcDirs | ForEach-Object { Join-Path $repoRoot $_ }) -Recurse -File -ErrorAction SilentlyContinue
+  foreach ($file in $srcFiles) {
+    if ($file.LastWriteTime -gt $stampTime) {
+      return $false
+    }
+  }
+
+  if ((Get-Item (Join-Path $repoRoot "package.json")).LastWriteTime -gt $stampTime) {
+    return $false
+  }
+
+  $lockPath = Join-Path $repoRoot "package-lock.json"
+  if ((Test-Path $lockPath) -and (Get-Item $lockPath).LastWriteTime -gt $stampTime) {
+    return $false
+  }
+
+  $outputs = @("dist\index.html", "dist-electron\electron\main.js")
+  foreach ($relativePath in $outputs) {
+    if (-not (Test-Path (Join-Path $repoRoot $relativePath))) {
+      return $false
+    }
+  }
+
+  return $true
+}
+
+function Invoke-Build {
+  Invoke-Step "Building renderer and Electron main process" {
+    $stampPath = Join-Path $repoRoot ".hermes-build-stamp"
+    Remove-Item $stampPath -Force -ErrorAction SilentlyContinue
+
+    Invoke-Npm @("run", "build")
+
+    New-Item -ItemType File -Path $stampPath -Force | Out-Null
+  }
+}
+
+if ($Build -or -not (Test-BuildCurrent)) {
+  Invoke-Build
 }
 
 Invoke-Step "Starting Hermes Desktop Agent" {

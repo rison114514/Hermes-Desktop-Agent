@@ -33,6 +33,7 @@ const api = {
   renameWorkspaceItem: (itemPath: string, nextName: string) => ipcRenderer.invoke('workspace:rename-item', itemPath, nextName),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
   getHermesSkills: () => ipcRenderer.invoke('hermes:get-skills'),
+  getHermesCommands: () => ipcRenderer.invoke('hermes:get-commands'),
   readWorkspaceFile: (filePath: string) => ipcRenderer.invoke('workspace:read-file', filePath),
   revealWorkspaceInWindows: () => ipcRenderer.invoke('windows:reveal-workspace'),
   openWorkspaceInWindows: () => ipcRenderer.invoke('windows:open-workspace'),

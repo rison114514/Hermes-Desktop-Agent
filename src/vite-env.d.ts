@@ -72,6 +72,11 @@ declare global {
         description: string
         enabled: boolean
       }>>
+      getHermesCommands: () => Promise<Array<{
+        id: string
+        name: string
+        description: string
+      }>>
       getWorkspaceSnapshot: () => Promise<DesktopWorkspaceSnapshot>
       readWorkspaceDirectory: (directoryPath: string) => Promise<{
         ok: boolean

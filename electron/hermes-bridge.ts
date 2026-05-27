@@ -91,6 +91,7 @@ export class HermesBridge extends EventEmitter {
   private workspacePath = process.cwd()
   private permissionHandler: HermesPermissionHandler | null = null
   private promptCancelRequested = false
+  private cachedCommands: HermesCommandInfo[] = []
 
   getWorkspacePath() {
     return this.workspacePath
@@ -102,6 +103,10 @@ export class HermesBridge extends EventEmitter {
 
   getSessionId() {
     return this.sessionId
+  }
+
+  getCachedCommands(): HermesCommandInfo[] {
+    return this.cachedCommands
   }
 
   async switchWorkspace(workspacePath: string) {
@@ -401,6 +406,12 @@ export class HermesBridge extends EventEmitter {
         },
       },
     })
+
+    const initCommands = extractAvailableCommands(init as Record<string, unknown>)
+    if (initCommands.length > 0) {
+      this.cachedCommands = initCommands
+      this.emitEvent({ type: 'commands', payload: initCommands })
+    }
 
     const model = this.extractCurrentModel(init)
     this.emitEvent({
@@ -750,7 +761,8 @@ export class HermesBridge extends EventEmitter {
     }
 
     if (kind === 'available_commands_update') {
-      this.emitEvent({ type: 'commands', payload: extractAvailableCommands(updateRecord) })
+      this.cachedCommands = extractAvailableCommands(updateRecord)
+      this.emitEvent({ type: 'commands', payload: this.cachedCommands })
       return
     }
 

@@ -86,7 +86,6 @@ export function InputBar() {
 
         return item.name.toLowerCase().includes(query) || item.description.toLowerCase().includes(query)
       })
-      .slice(0, 8)
   }, [commands, slashDraft, skills])
 
   useEffect(() => {
@@ -270,7 +269,7 @@ export function InputBar() {
             <span className="text-slate-500">Hermes commands and skills</span>
           </div>
           {suggestions.length > 0 ? (
-            <div className="max-h-72 overflow-y-auto py-2">
+            <div className="max-h-80 overflow-y-auto py-2">
               {suggestions.map((suggestion, index) => (
                 <button
                   key={suggestion.id}
