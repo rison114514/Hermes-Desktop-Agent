@@ -30,7 +30,7 @@ export function WorkspacePanel() {
 
   if (collapsed) {
     return (
-      <aside className="flex w-10 shrink-0 flex-col items-center border-l border-white/10 bg-[linear-gradient(180deg,rgba(7,10,18,0.95),rgba(15,23,42,0.92))] py-3">
+      <aside className="flex w-10 shrink-0 flex-col items-center border-l border-white/10 bg-[var(--gradient-workspace)] py-3">
         <button
           type="button"
           onClick={() => setCollapsed(false)}
@@ -45,7 +45,7 @@ export function WorkspacePanel() {
   }
 
   return (
-    <aside className="flex w-[24rem] shrink-0 flex-col border-l border-white/10 bg-[linear-gradient(180deg,rgba(7,10,18,0.95),rgba(15,23,42,0.92))] px-5 py-5">
+    <aside className="flex w-[24rem] shrink-0 flex-col border-l border-white/10 bg-[var(--gradient-workspace)] px-5 py-5">
       <div className="mb-6 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-3xl bg-rose-300/15 text-rose-200">

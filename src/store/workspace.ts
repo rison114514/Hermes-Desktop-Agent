@@ -34,6 +34,7 @@ export interface WindowsInteropState {
 interface WorkspaceStore {
   cwd: string
   session: string
+  sessionTitle: string | null
   files: WorkspaceFileNode[]
   expandedPaths: string[]
   selectedFilePath: string | null
@@ -44,6 +45,7 @@ interface WorkspaceStore {
   setSnapshot: (snapshot: {
     cwd: string
     session: string
+    sessionTitle?: string | null
     files: WorkspaceFileNode[]
     tasks: WorkspaceTask[]
     windows: WindowsInteropState
@@ -58,6 +60,7 @@ interface WorkspaceStore {
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   cwd: '/home/rison/hermes-desktop-agent',
   session: '启动中',
+  sessionTitle: null,
   files: [
     { name: 'electron', path: 'electron', type: 'directory' },
     { name: 'src', path: 'src', type: 'directory' },
@@ -83,6 +86,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     set((state) => ({
       cwd: snapshot.cwd,
       session: snapshot.session,
+      sessionTitle: snapshot.sessionTitle ?? state.sessionTitle,
       files: snapshot.files,
       tasks: snapshot.tasks,
       windows: {

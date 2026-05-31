@@ -15,6 +15,7 @@ export type HermesBridgeEvent =
   | { type: 'commands'; payload: HermesCommandInfo[] }
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
+  | { type: 'workspace:snapshot'; payload: unknown }
   | { type: 'exit'; payload: { code: number | null } }
 
 export type HermesSessionInfo = {
@@ -88,13 +89,43 @@ export class HermesBridge extends EventEmitter {
   private historyTurns: HistoryTurn[] = []
   private historyTurnCounter = 0
   private historyFlushTimer: NodeJS.Timeout | null = null
+  private historyMaxTimeout: NodeJS.Timeout | null = null
+  private stderrBuffer: string[] = []
+  private stderrFlushTimer: NodeJS.Timeout | null = null
   private workspacePath = process.cwd()
   private permissionHandler: HermesPermissionHandler | null = null
   private promptCancelRequested = false
   private cachedCommands: HermesCommandInfo[] = []
+  private proxyConfig: { enabled: boolean; type: string; host: string; port: number } | null = null
 
   getWorkspacePath() {
     return this.workspacePath
+  }
+
+  setProxyConfig(config: { enabled: boolean; type: string; host: string; port: number } | null) {
+    this.proxyConfig = config
+  }
+
+  private getProxyExportLines(): string[] {
+    const cfg = this.proxyConfig
+    if (!cfg || !cfg.enabled) return []
+
+    const { host, port, type } = cfg
+    if (!host || !port) return []
+
+    const protocol = type === 'socks5' ? 'socks5' : 'http'
+    const proxyUrl = `${protocol}://${host}:${port}`
+
+    return [
+      `export http_proxy="${proxyUrl}"`,
+      `export HTTP_PROXY="${proxyUrl}"`,
+      `export https_proxy="${proxyUrl}"`,
+      `export HTTPS_PROXY="${proxyUrl}"`,
+      `export all_proxy="${proxyUrl}"`,
+      `export ALL_PROXY="${proxyUrl}"`,
+      `export NO_PROXY="localhost,127.0.0.1,.local"`,
+      `export no_proxy="localhost,127.0.0.1,.local"`,
+    ]
   }
 
   setPermissionHandler(handler: HermesPermissionHandler | null) {
@@ -238,7 +269,12 @@ export class HermesBridge extends EventEmitter {
 
     this.sessionId = sessionId
     this.activeMessageIds.clear()
-    this.scheduleHistoryFlush(600)
+    this.scheduleHistoryFlush(2000)
+    this.historyMaxTimeout = setTimeout(() => {
+      if (this.loadingSessionHistory && this.historyTurns.length > 0) {
+        this.flushHistoryTurns()
+      }
+    }, 5000)
   }
 
   async startNewSession(workspacePath?: string) {
@@ -328,6 +364,7 @@ export class HermesBridge extends EventEmitter {
         'export PYTHONUTF8=1',
         'export PYTHONIOENCODING=utf-8',
         'export HERMES_TEXT_ENCODING=utf-8',
+        ...this.getProxyExportLines(),
         'exec hermes acp --accept-hooks',
       ].join('; '),
     ], {
@@ -357,10 +394,18 @@ export class HermesBridge extends EventEmitter {
       if (this.process !== child) {
         return
       }
-      const text = chunk.toString('utf8').trim()
-      if (text) {
-        this.handleStderr(text)
+      const lines = chunk.toString('utf8').split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+      if (lines.length === 0) return
+
+      this.stderrBuffer.push(...lines)
+
+      if (this.stderrFlushTimer) {
+        clearTimeout(this.stderrFlushTimer)
       }
+      this.stderrFlushTimer = setTimeout(() => {
+        this.stderrFlushTimer = null
+        this.flushStderr()
+      }, 100)
     })
 
     child.on('close', (code) => {
@@ -439,6 +484,7 @@ export class HermesBridge extends EventEmitter {
       })
     }
 
+    const proxyExports = this.getProxyExportLines()
     const installerScript = [
       'set -e',
       'export PATH="$HOME/.local/bin:$PATH"',
@@ -446,6 +492,7 @@ export class HermesBridge extends EventEmitter {
       'export PYTHONIOENCODING=utf-8',
       'export LANG=C.UTF-8',
       'export LC_ALL=C.UTF-8',
+      ...proxyExports,
       'export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"',
       'export UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"',
       'export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"',
@@ -570,23 +617,42 @@ export class HermesBridge extends EventEmitter {
     pending.resolve(message.result)
   }
 
-  private handleStderr(text: string) {
-    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  private flushStderr() {
+    const lines = this.stderrBuffer
+    this.stderrBuffer = []
+
+    if (lines.length === 0) return
+
+    const filtered: string[] = []
+    const warnings: string[] = []
 
     for (const line of lines) {
-      if (/\s\[INFO\]\s/.test(line)) {
+      if (/\s\[INFO\]\s/.test(line) || /\s\[DEBUG\]\s/.test(line)) {
         continue
       }
 
       if (/\s\[WARNING\]\s/.test(line)) {
-        this.emitEvent({
-          type: 'status',
-          payload: { stage: 'backend-warning', detail: line },
-        })
+        warnings.push(line)
         continue
       }
 
-      this.emitEvent({ type: 'stderr', payload: normalizeMaybeText(line, 'stderr') ?? line })
+      if (isStatusLine(line)) {
+        continue
+      }
+
+      filtered.push(line)
+    }
+
+    for (const warn of warnings) {
+      this.emitEvent({
+        type: 'status',
+        payload: { stage: 'backend-warning', detail: warn },
+      })
+    }
+
+    if (filtered.length > 0) {
+      const payload = normalizeMaybeText(filtered.join('\n'), 'stderr') ?? filtered.join('\n')
+      this.emitEvent({ type: 'stderr', payload })
     }
   }
 
@@ -812,11 +878,15 @@ export class HermesBridge extends EventEmitter {
       clearTimeout(this.historyFlushTimer)
       this.historyFlushTimer = null
     }
+    if (this.historyMaxTimeout) {
+      clearTimeout(this.historyMaxTimeout)
+      this.historyMaxTimeout = null
+    }
     this.loadingSessionHistory = false
     this.historyTurns = []
   }
 
-  private scheduleHistoryFlush(delayMs = 350) {
+  private scheduleHistoryFlush(delayMs = 500) {
     if (this.historyFlushTimer) {
       clearTimeout(this.historyFlushTimer)
     }
@@ -876,6 +946,10 @@ export class HermesBridge extends EventEmitter {
   }
 
   private flushHistoryTurns() {
+    if (this.historyMaxTimeout) {
+      clearTimeout(this.historyMaxTimeout)
+      this.historyMaxTimeout = null
+    }
     const turns = this.historyTurns
     this.historyTurns = []
     this.loadingSessionHistory = false
@@ -1079,6 +1153,29 @@ function stringifyPreview(payload: unknown) {
   return text.length > HERMES_DIAGNOSTIC_PREVIEW_CHARS
     ? `${text.slice(0, HERMES_DIAGNOSTIC_PREVIEW_CHARS)}\n...[truncated ${text.length - HERMES_DIAGNOSTIC_PREVIEW_CHARS} chars]`
     : text
+}
+
+const STATUS_LINE_PATTERNS = [
+  /^[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2B50}\u{2764}\u{2714}\u{274C}\u{26A0}\u{26A1}\u{2139}\u{269B}\u{FE0F}\u{200D}]/u,
+  /^(?:\[(?:INFO|DEBUG|WARNING|ERROR|CRITICAL)\]\s*)/i,
+  /^Self-improvement review:/i,
+  /^Memory updated/i,
+  /^(?:✓|✔|✗|✘|☐|☑|○|●|◉|◌)\s/,
+  /^\s+[\^~]+\s*$/,  // Python traceback caret/tilde markers
+]
+
+function isStatusLine(line: string): boolean {
+  if (!line) {
+    return false
+  }
+
+  for (const pattern of STATUS_LINE_PATTERNS) {
+    if (pattern.test(line)) {
+      return true
+    }
+  }
+
+  return false
 }
 
 function stringifyMaybe(value: unknown): string | undefined {

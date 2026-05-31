@@ -7,8 +7,34 @@ import { useChatStore } from '@/store/chat'
 import { useDesktopWindowStore } from '@/store/window'
 import { useSkillsStore } from '@/store/skills'
 import { useWorkspaceStore } from '@/store/workspace'
+import { useThemeStore } from '@/store/theme'
+
+function looksLikeError(content: string): boolean {
+  if (!content) {
+    return false
+  }
+
+  const errorPatterns = [
+    /\b\w*(?:Error|Exception)\b/,
+    /\b(?:Traceback|FAILED|Fatal|CRITICAL)\b/,
+    /^Traceback\s*\(most recent call last\):/m,
+    /^\s*File\s+"[^"]+",\s+line\s+\d+/m,
+    /\b(?:failed|error|exception|traceback|fatal|critical)\b/i,
+    /[✗✘]/,
+    /\bstatus\s*(?:code\s*)?[1-9]\d{2}\b/,
+  ]
+
+  for (const pattern of errorPatterns) {
+    if (pattern.test(content)) {
+      return true
+    }
+  }
+
+  return false
+}
 
 export default function App() {
+  const theme = useThemeStore((state) => state.theme)
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
   const setPreview = useWorkspaceStore((state) => state.setPreview)
@@ -175,14 +201,20 @@ export default function App() {
       }
 
       if (event.type === 'stderr') {
+        const isError = looksLikeError(event.payload)
         addMessage({
           id: `stderr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'system',
           content: event.payload,
-          tone: 'error',
-          label: '错误输出',
+          tone: isError ? 'error' : 'muted',
+          label: isError ? '错误输出' : '后台输出',
         })
-        setConnectionLabel('Hermes 返回了错误信息')
+        setConnectionLabel(isError ? 'Hermes 返回了错误信息' : 'Hermes 后台输出')
+        return
+      }
+
+      if (event.type === 'workspace:snapshot') {
+        setSnapshot(event.payload as DesktopWorkspaceSnapshot)
         return
       }
 
@@ -215,7 +247,7 @@ export default function App() {
   ])
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#061018] text-slate-100">
+    <div data-theme={theme} className="flex h-screen flex-col overflow-hidden rounded-[28px] border border-white/10 bg-app-bg text-slate-100">
       <TitleBar />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SkillsPanel />

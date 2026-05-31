@@ -1,10 +1,13 @@
 import type { CSSProperties } from 'react'
-import { Bot, Minus, Pin, PinOff, X } from 'lucide-react'
+import { Bot, Minus, Moon, Pin, PinOff, Sun, X } from 'lucide-react'
 import { useDesktopWindowStore } from '@/store/window'
+import { useThemeStore } from '@/store/theme'
 
 export function TitleBar() {
   const alwaysOnTop = useDesktopWindowStore((state) => state.alwaysOnTop)
   const setWindowState = useDesktopWindowStore((state) => state.setState)
+  const theme = useThemeStore((state) => state.theme)
+  const setTheme = useThemeStore((state) => state.setTheme)
 
   const handleToggleAlwaysOnTop = async () => {
     if (!window.hermesDesktop) {
@@ -39,6 +42,15 @@ export function TitleBar() {
           title={alwaysOnTop ? '取消置顶' : '置顶窗口'}
         >
           {alwaysOnTop ? <Pin className="h-4 w-4" /> : <PinOff className="h-4 w-4" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 transition hover:border-amber-300/40 hover:text-amber-100"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+          title={theme === 'dark' ? '切换浅色主题' : '切换深色主题'}
+        >
+          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
         <button
           type="button"

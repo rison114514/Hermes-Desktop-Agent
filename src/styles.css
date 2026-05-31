@@ -1,12 +1,142 @@
 @import "tailwindcss";
 
+@theme {
+  --color-app-bg: #061018;
+}
+
 :root {
+  --gradient-chat: radial-gradient(circle at top, rgba(34, 211, 238, 0.14), transparent 42%);
+  --gradient-skills: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.92));
+  --gradient-workspace: linear-gradient(180deg, rgba(7, 10, 18, 0.95), rgba(15, 23, 42, 0.92));
+
   color-scheme: dark;
   font-family: "IBM Plex Sans", "Noto Sans SC", sans-serif;
   background:
     radial-gradient(circle at top, rgba(34, 211, 238, 0.16), transparent 32%),
     linear-gradient(160deg, #04070c 0%, #07121d 38%, #0a1626 100%);
   color: #e5eef7;
+  transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+}
+
+[data-theme="light"] {
+  /* Slate: inverted — 50↔950, 100↔900, etc. (dark theme uses 100-400 for text; light theme needs dark shades there) */
+  --color-slate-50: #020617;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #94a3b8;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-slate-950: #f8fafc;
+
+  /* Cyan: inverted */
+  --color-cyan-50: #083344;
+  --color-cyan-100: #164e63;
+  --color-cyan-200: #155e75;
+  --color-cyan-300: #0e7490;
+  --color-cyan-400: #0891b2;
+  --color-cyan-500: #06b6d4;
+  --color-cyan-600: #22d3ee;
+  --color-cyan-700: #67e8f9;
+  --color-cyan-800: #a5f3fc;
+  --color-cyan-900: #cffafe;
+  --color-cyan-950: #ecfeff;
+
+  /* Amber: inverted */
+  --color-amber-50: #451a03;
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-amber-400: #d97706;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+  --color-amber-950: #fffbeb;
+
+  /* Rose: inverted */
+  --color-rose-50: #4c0519;
+  --color-rose-100: #881337;
+  --color-rose-200: #9f1239;
+  --color-rose-300: #be123c;
+  --color-rose-400: #e11d48;
+  --color-rose-500: #f43f5e;
+  --color-rose-600: #fb7185;
+  --color-rose-700: #fda4af;
+  --color-rose-800: #fecdd3;
+  --color-rose-900: #ffe4e6;
+  --color-rose-950: #fff1f2;
+
+  /* Emerald: inverted */
+  --color-emerald-50: #022c22;
+  --color-emerald-100: #064e3b;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-emerald-400: #059669;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #34d399;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-950: #ecfdf5;
+
+  /* Sky: inverted */
+  --color-sky-50: #082f49;
+  --color-sky-100: #0c4a6e;
+  --color-sky-200: #075985;
+  --color-sky-300: #0369a1;
+  --color-sky-400: #0284c7;
+  --color-sky-500: #0ea5e9;
+  --color-sky-600: #38bdf8;
+  --color-sky-700: #7dd3fc;
+  --color-sky-800: #bae6fd;
+  --color-sky-900: #e0f2fe;
+  --color-sky-950: #f0f9ff;
+
+  /* Violet: inverted */
+  --color-violet-50: #2e1065;
+  --color-violet-100: #4c1d95;
+  --color-violet-200: #5b21b6;
+  --color-violet-300: #6d28d9;
+  --color-violet-400: #7c3aed;
+  --color-violet-500: #8b5cf6;
+  --color-violet-600: #a78bfa;
+  --color-violet-700: #c4b5fd;
+  --color-violet-800: #ddd6fe;
+  --color-violet-900: #ede9fe;
+  --color-violet-950: #f5f3ff;
+
+  /* Fuchsia: inverted */
+  --color-fuchsia-50: #4a044e;
+  --color-fuchsia-100: #701a75;
+  --color-fuchsia-200: #86198f;
+  --color-fuchsia-300: #a21caf;
+  --color-fuchsia-400: #c026d3;
+  --color-fuchsia-500: #d946ef;
+  --color-fuchsia-600: #e879f9;
+  --color-fuchsia-700: #f0abfc;
+  --color-fuchsia-800: #f5d0fe;
+  --color-fuchsia-900: #fae8ff;
+  --color-fuchsia-950: #fdf4ff;
+
+  --color-white: #020617;
+  --color-black: #ffffff;
+
+  --color-app-bg: #f8fafc;
+
+  --gradient-chat: radial-gradient(circle at top, rgba(8, 145, 178, 0.08), transparent 42%);
+  --gradient-skills: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.96));
+  --gradient-workspace: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.96));
+
+  color-scheme: light;
+  background:
+    radial-gradient(circle at top, rgba(8, 145, 178, 0.1), transparent 32%),
+    linear-gradient(160deg, #f8fafc 0%, #f1f5f9 38%, #e2e8f0 100%);
+  color: #0f172a;
 }
 
 * {
@@ -25,6 +155,13 @@ body {
     radial-gradient(circle at 15% 20%, rgba(251, 191, 36, 0.14), transparent 22%),
     radial-gradient(circle at 85% 18%, rgba(34, 211, 238, 0.12), transparent 18%),
     linear-gradient(145deg, #02050a 0%, #08101a 50%, #09111c 100%);
+}
+
+[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 15% 20%, rgba(217, 119, 6, 0.06), transparent 22%),
+    radial-gradient(circle at 85% 18%, rgba(8, 145, 178, 0.06), transparent 18%),
+    linear-gradient(145deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
 }
 
 button,
@@ -54,4 +191,12 @@ button {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.34);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.18);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.3);
 }

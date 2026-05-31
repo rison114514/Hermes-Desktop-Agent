@@ -1,0 +1,13 @@
+{
+  "name": "hello-world",
+  "version": "1.0.0",
+  "description": "A hello-world example MOD that demonstrates the Hermes MOD system",
+  "author": "Hermes Desktop",
+  "icon": "smile",
+  "entry": "index.js",
+  "hermesVersion": ">=0.1.0",
+  "permissions": ["panels", "hooks", "config"],
+  "config": {
+    "greeting": { "type": "string", "default": "Hello from MOD!", "label": "Greeting message" }
+  }
+}

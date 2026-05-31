@@ -6,20 +6,12 @@ import {
   ExternalLink,
   FolderGit2,
   FolderOpen,
-  MessageSquarePlus,
   RefreshCw,
   Terminal,
 } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
 import { CollapsibleSection } from './CollapsibleSection'
-
-type HermesSessionInfo = {
-  sessionId: string
-  cwd: string
-  title?: string
-  updatedAt?: string
-}
 
 type HermesWorktreeInfo = {
   path: string
@@ -32,53 +24,22 @@ type HermesWorktreeInfo = {
 
 export function SessionInfo() {
   const cwd = useWorkspaceStore((state) => state.cwd)
-  const session = useWorkspaceStore((state) => state.session)
   const windows = useWorkspaceStore((state) => state.windows)
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const tasks = useWorkspaceStore((state) => state.tasks)
   const files = useWorkspaceStore((state) => state.files)
   const addSessionMarker = useChatStore((state) => state.addSessionMarker)
-  const resetForSession = useChatStore((state) => state.resetForSession)
   const [status, setStatus] = useState<string | null>(null)
-  const [sessions, setSessions] = useState<HermesSessionInfo[]>([])
-  const [selectedSessionId, setSelectedSessionId] = useState('')
   const [worktrees, setWorktrees] = useState<HermesWorktreeInfo[]>([])
   const [selectedWorktreePath, setSelectedWorktreePath] = useState('')
   const [newWorktreeName, setNewWorktreeName] = useState('')
   const [newWorktreeDirectory, setNewWorktreeDirectory] = useState('')
   const [sessionLoading, setSessionLoading] = useState(false)
 
-  const selectedSession = useMemo(
-    () => sessions.find((item) => item.sessionId === selectedSessionId) ?? null,
-    [selectedSessionId, sessions],
-  )
   const selectedWorktree = useMemo(
     () => worktrees.find((item) => item.path === selectedWorktreePath) ?? null,
     [selectedWorktreePath, worktrees],
   )
-
-  const refreshSessions = async () => {
-    if (!window.hermesDesktop) {
-      setStatus('Desktop bridge is unavailable.')
-      return
-    }
-
-    setSessionLoading(true)
-    try {
-      const list = await window.hermesDesktop.listHermesSessions()
-      setSessions(list)
-      setSelectedSessionId((current) => (
-        current && list.some((item) => item.sessionId === current)
-          ? current
-          : list[0]?.sessionId || ''
-      ))
-      setStatus(list.length ? `Loaded ${list.length} historical ACP sessions.` : 'No historical ACP sessions found.')
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Failed to load sessions.')
-    } finally {
-      setSessionLoading(false)
-    }
-  }
 
   const refreshWorktrees = async () => {
     if (!window.hermesDesktop) {
@@ -107,48 +68,8 @@ export function SessionInfo() {
   }
 
   useEffect(() => {
-    void refreshSessions()
     void refreshWorktrees()
   }, [])
-
-  const handleLoadSession = async () => {
-    if (!window.hermesDesktop || !selectedSession) {
-      return
-    }
-
-    setSessionLoading(true)
-    try {
-      resetForSession(`Loading ACP session ${selectedSession.sessionId}...`)
-      const snapshot = await window.hermesDesktop.loadHermesSession(selectedSession.sessionId, selectedSession.cwd)
-      setSnapshot(snapshot)
-      setStatus(`Loaded session ${selectedSession.sessionId.slice(0, 8)} and switched workspace.`)
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Failed to load session.')
-    } finally {
-      setSessionLoading(false)
-    }
-  }
-
-  const handleNewSession = async () => {
-    if (!window.hermesDesktop) {
-      setStatus('Desktop bridge is unavailable.')
-      return
-    }
-
-    setSessionLoading(true)
-    try {
-      resetForSession('Starting a new ACP session...')
-      const snapshot = await window.hermesDesktop.newHermesSession()
-      setSnapshot(snapshot)
-      resetForSession(`Started a new ACP session in ${snapshot.cwd}.`)
-      await refreshSessions()
-      setStatus(`Started new session ${snapshot.session.slice(0, 8)}.`)
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Failed to start a new session.')
-    } finally {
-      setSessionLoading(false)
-    }
-  }
 
   const handleCreateWorktree = async () => {
     if (!window.hermesDesktop) {
@@ -203,7 +124,6 @@ export function SessionInfo() {
       const snapshot = await window.hermesDesktop.switchHermesWorktree(selectedWorktree.path)
       setSnapshot(snapshot)
       addSessionMarker(`Started a new ACP session in ${snapshot.cwd}.`)
-      await refreshSessions()
       await refreshWorktrees()
       setStatus(`Switched to ${selectedWorktree.name} and started a new session.`)
     } catch (error) {
@@ -229,7 +149,6 @@ export function SessionInfo() {
       const snapshot = await window.hermesDesktop.switchWorkspaceRoot(selected.path)
       setSnapshot(snapshot)
       addSessionMarker(`Started a new ACP session in workspace ${snapshot.cwd}.`)
-      await refreshSessions()
       await refreshWorktrees()
       setStatus(`Switched workspace to ${snapshot.cwd}.`)
     } catch (error) {
@@ -291,7 +210,7 @@ export function SessionInfo() {
 
     setSnapshot({
       cwd,
-      session,
+      session: useWorkspaceStore.getState().session,
       files,
       tasks,
       windows: {
@@ -319,77 +238,12 @@ export function SessionInfo() {
 
   return (
     <CollapsibleSection
-      title="Session"
+      title="Workspace"
       icon={<Cable className="h-4 w-4 text-cyan-200" />}
       className="text-sm text-slate-300"
     >
 
       <div className="space-y-3">
-        <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Active ID</p>
-            <button
-              type="button"
-              onClick={() => void handleNewSession()}
-              disabled={sessionLoading}
-              className="flex items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1.5 text-[11px] text-emerald-100 transition enabled:hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
-              title="Start a new ACP session"
-            >
-              <MessageSquarePlus className="h-3.5 w-3.5" />
-              New
-            </button>
-          </div>
-          <p className="mt-1 break-all">{session}</p>
-        </div>
-
-        <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">History</p>
-            <button
-              type="button"
-              onClick={() => void refreshSessions()}
-              disabled={sessionLoading}
-              className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-200 transition enabled:hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-600"
-              title="Refresh sessions"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${sessionLoading ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
-
-          <select
-            value={selectedSessionId}
-            onChange={(event) => setSelectedSessionId(event.target.value)}
-            disabled={sessionLoading || sessions.length === 0}
-            className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 outline-none transition focus:border-cyan-300/50 disabled:cursor-not-allowed disabled:text-slate-500"
-          >
-            {sessions.length === 0 ? (
-              <option value="">No sessions</option>
-            ) : sessions.map((item) => (
-              <option key={item.sessionId} value={item.sessionId}>
-                {(item.title || item.sessionId).slice(0, 48)} - {item.cwd}
-              </option>
-            ))}
-          </select>
-
-          {selectedSession ? (
-            <p className="mt-2 break-all text-[11px] leading-5 text-slate-500">
-              {selectedSession.updatedAt ?? 'unknown time'} · {selectedSession.cwd}
-            </p>
-          ) : null}
-
-          <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => void handleLoadSession()}
-              disabled={sessionLoading || !selectedSession}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs text-cyan-100 transition enabled:hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
-            >
-              <Terminal className="h-3.5 w-3.5" />
-              Load
-            </button>
-          </div>
-        </div>
-
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">

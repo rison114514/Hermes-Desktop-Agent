@@ -12,6 +12,7 @@ type DesktopWorkspaceFileNode = {
 type DesktopWorkspaceSnapshot = {
   cwd: string
   session: string
+  sessionTitle?: string | null
   files: DesktopWorkspaceFileNode[]
   tasks: Array<{ id: string; title: string; done: boolean }>
   windows: {
@@ -115,6 +116,18 @@ declare global {
       minimizeWindow: () => Promise<{ ok: boolean }>
       hideWindow: () => Promise<{ ok: boolean }>
       closeWindow: () => Promise<{ ok: boolean }>
+      setProxyConfig: (config: { enabled: boolean; type: string; host: string; port: number }) => Promise<{ ok: boolean }>
+      detectProxyHost: () => Promise<{ host: string }>
+      restartBackend: () => Promise<{ ok: boolean }>
+      scanMods: () => Promise<Array<{
+        name: string
+        path: string
+        manifest: Record<string, unknown>
+        enabled: boolean
+        error?: string
+      }>>
+      toggleMod: (modName: string, enabled: boolean) => Promise<{ ok: boolean }>
+      uninstallMod: (modPath: string) => Promise<{ ok: boolean }>
     }
   }
 }

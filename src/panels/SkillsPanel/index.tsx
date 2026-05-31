@@ -2,13 +2,15 @@ import { useState } from 'react'
 import { ChevronLeft, ChevronRight, Layers3 } from 'lucide-react'
 import { SkillList } from './SkillList'
 import { ModelConfig } from './ModelConfig'
+import { ProxyConfig } from './ProxyConfig'
+import { ModPanel, ModSidebarPanels } from '@/components/ModPanel'
 
 export function SkillsPanel() {
   const [collapsed, setCollapsed] = useState(false)
 
   if (collapsed) {
     return (
-      <aside className="flex w-10 shrink-0 flex-col items-center border-r border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,0.92))] py-3">
+      <aside className="flex w-10 shrink-0 flex-col items-center border-r border-white/10 bg-[var(--gradient-skills)] py-3">
         <button
           type="button"
           onClick={() => setCollapsed(false)}
@@ -23,7 +25,7 @@ export function SkillsPanel() {
   }
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-r border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,0.92))] px-5 py-5">
+    <aside className="flex w-80 shrink-0 flex-col border-r border-white/10 bg-[var(--gradient-skills)] px-5 py-5">
       <div className="mb-6 flex items-center gap-3">
         <div className="flex h-11 w-11 items-center justify-center rounded-3xl bg-amber-300/15 text-amber-200">
           <Layers3 className="h-5 w-5" />
@@ -50,6 +52,16 @@ export function SkillsPanel() {
       <div className="mt-5">
         <ModelConfig />
       </div>
+
+      <div className="mt-3">
+        <ProxyConfig />
+      </div>
+
+      <div className="mt-3">
+        <ModPanel />
+      </div>
+
+      <ModSidebarPanels />
     </aside>
   )
 }

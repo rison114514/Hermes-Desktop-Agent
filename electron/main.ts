@@ -1,9 +1,10 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
-import { access, readFile, rename, stat } from 'node:fs/promises'
+import { access, readFile, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOption, type HermesPermissionOutcome, type HermesPermissionRequest } from './hermes-bridge.js'
+import { loadMod, reloadMod, scanModsDirectory } from './mod-loader.js'
 import {
   canPreviewFile,
   FILE_PREVIEW_MAX_CHARS,
@@ -38,6 +39,8 @@ let permissionRequestSequence = 0
 let bridgeBound = false
 let isQuitting = false
 let workspaceRoot = process.cwd()
+let lastSessionId: string | undefined
+let currentSessionTitle: string | null = null
 
 type HermesConfigSnapshot = {
   provider: string
@@ -208,7 +211,22 @@ app.whenReady().then(async () => {
   createTray()
   registerShortcuts()
 
-  void hermesBridge.start().catch((error) => {
+  void hermesBridge.start().then(async () => {
+    if (lastSessionId && hermesBridge.getSessionId() !== lastSessionId) {
+      try {
+        await hermesBridge.loadSession(lastSessionId, workspaceRoot)
+        currentSessionTitle = await lookupSessionTitle(lastSessionId)
+        queuePersistWorkspaceRoot(lastSessionId)
+        const snapshot = await createWorkspaceSnapshot()
+        mainWindow?.webContents.send('hermes:event', {
+          type: 'workspace:snapshot',
+          payload: snapshot,
+        } satisfies HermesBridgeEvent)
+      } catch (error) {
+        console.warn('[hermes] failed to auto-resume session', error instanceof Error ? error.message : error)
+      }
+    }
+  }).catch((error) => {
     console.warn('[hermes] backend warm-up failed', error instanceof Error ? error.message : error)
   })
 
@@ -269,14 +287,82 @@ ipcMain.handle('hermes:load-session', async (_event, sessionId: string, cwd: str
   await assertWorkspaceExists(nextWorkspaceRoot)
   workspaceRoot = nextWorkspaceRoot
   await hermesBridge.loadSession(sessionId, workspaceRoot)
+  currentSessionTitle = await lookupSessionTitle(sessionId)
   queuePersistWorkspaceRoot(sessionId)
   return createWorkspaceSnapshot()
 })
 
 ipcMain.handle('hermes:new-session', async () => {
+  currentSessionTitle = null
   await hermesBridge.startNewSession(workspaceRoot)
   queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
+})
+
+ipcMain.handle('proxy:set-config', async (_event, config) => {
+  hermesBridge.setProxyConfig(config)
+  return { ok: true }
+})
+
+ipcMain.handle('proxy:detect-host', async () => {
+  try {
+    const resolv = await runWslCommand(['bash', '-lc', "grep nameserver /etc/resolv.conf | head -1 | sed 's/.* //'"])
+    const ip = resolv.trim()
+    if (ip) return { host: ip }
+  } catch { /* fall through */ }
+
+  try {
+    const route = await runWslCommand(['bash', '-lc', "ip route show default | awk '{print $3}'"])
+    const ip = route.trim()
+    if (ip) return { host: ip }
+  } catch { /* fall through */ }
+
+  return { host: 'host.docker.internal' }
+})
+
+ipcMain.handle('hermes:restart-backend', async () => {
+  hermesBridge.stop()
+  await hermesBridge.start()
+  return { ok: true }
+})
+
+// --- MOD handlers ---
+
+ipcMain.handle('mods:scan', async () => {
+  return scanModsDirectory()
+})
+
+ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) => {
+  if (enabled) {
+    const mod = await loadMod(path.join(process.cwd(), 'mods', modName))
+    if (mod.exports?.main?.ipcHandlers) {
+      for (const [channel, handler] of Object.entries(mod.exports.main.ipcHandlers)) {
+        const prefixedChannel = `mod:${modName}:${channel}`
+        ipcMain.handle(prefixedChannel, (_e, ...args) => (handler as (...a: unknown[]) => unknown)(_e, ...args))
+      }
+    }
+    // Strip functions before IPC transfer — hooks/lifecycle stay in main process
+    const serializable: Record<string, unknown> = {
+      name: mod.name, path: mod.path, manifest: mod.manifest, enabled: true,
+    }
+    if (mod.exports) {
+      const safe: Record<string, unknown> = {}
+      if (mod.exports.panels) safe.panels = mod.exports.panels
+      if (mod.exports.skills) safe.skills = mod.exports.skills
+      if (mod.exports.commands) safe.commands = mod.exports.commands
+      if (mod.exports.defaultConfig) safe.defaultConfig = mod.exports.defaultConfig
+      serializable.exports = safe
+    }
+    return { ok: true, mod: serializable }
+  } else {
+    reloadMod(modName)
+    return { ok: true }
+  }
+})
+
+ipcMain.handle('mods:uninstall', async (_event, modPath: string) => {
+  await rm(modPath, { recursive: true, force: true })
+  return { ok: true }
 })
 
 ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
@@ -612,6 +698,8 @@ async function restoreWorkspaceRoot() {
       error: error instanceof Error ? error.message : error,
     })
   }
+
+  lastSessionId = state.lastSessionId
 }
 
 async function persistWorkspaceRoot(lastSessionId?: string) {
@@ -800,6 +888,7 @@ async function createWorkspaceSnapshot() {
   return {
     cwd: workspaceRoot,
     session: hermesBridge.getSessionId() ?? 'Local desktop session',
+    sessionTitle: currentSessionTitle,
     files: await readWorkspaceDirectory(workspaceRoot),
     tasks: [
       { id: 'task-layout', title: 'Desktop three-panel shell', done: true },
@@ -827,6 +916,16 @@ function workspaceHostPathFromHermesCwd(cwd: string) {
 
 async function assertWorkspaceExists(hostPath: string) {
   await access(hostPath)
+}
+
+async function lookupSessionTitle(sessionId: string): Promise<string | null> {
+  try {
+    const sessions = await hermesBridge.listSessions()
+    const match = sessions.find((s) => s.sessionId === sessionId)
+    return match?.title ?? null
+  } catch {
+    return null
+  }
 }
 
 async function createHermesWorktree(hostPath: string, options: CreateWorktreeOptions = {}) {

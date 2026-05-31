@@ -44,6 +44,13 @@ const api = {
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   hideWindow: () => ipcRenderer.invoke('window:hide'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
+  setProxyConfig: (config: { enabled: boolean; type: string; host: string; port: number }) =>
+    ipcRenderer.invoke('proxy:set-config', config),
+  detectProxyHost: () => ipcRenderer.invoke('proxy:detect-host'),
+  restartBackend: () => ipcRenderer.invoke('hermes:restart-backend'),
+  scanMods: () => ipcRenderer.invoke('mods:scan'),
+  toggleMod: (modName: string, enabled: boolean) => ipcRenderer.invoke('mods:toggle', modName, enabled),
+  uninstallMod: (modPath: string) => ipcRenderer.invoke('mods:uninstall', modPath),
 }
 
 contextBridge.exposeInMainWorld('hermesDesktop', api)
