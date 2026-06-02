@@ -566,6 +566,22 @@ function Ensure-HermesModelConfigured {
 
 }
 
+function Install-ModDependencies {
+  param([string]$RepoRoot)
+  $modsDir = Join-Path $RepoRoot "mods"
+  if (-not (Test-Path $modsDir)) { return }
+  Get-ChildItem $modsDir -Directory | ForEach-Object {
+    $modPkg = Join-Path $_.FullName "package.json"
+    $modModules = Join-Path $_.FullName "node_modules"
+    if ((Test-Path $modPkg) -and -not (Test-Path $modModules)) {
+      Write-Host "  Installing dependencies for MOD: $($_.Name)..."
+      Push-Location $_.FullName
+      try { npm install --no-audit --no-fund 2>&1 | Out-Null; Write-Host "  MOD $($_.Name) done." -ForegroundColor Green } catch { Write-Host "  MOD $($_.Name) failed: $_" -ForegroundColor Yellow }
+      Pop-Location
+    }
+  }
+}
+
 function Test-HermesAcp {
   param([string]$DistroName)
 
@@ -599,6 +615,10 @@ Ensure-WslBasics $Distro
 Ensure-HermesInstalled $Distro
 Ensure-HermesModelConfigured $Distro
 Test-HermesAcp $Distro
+
+if ($repoRoot) {
+  Install-ModDependencies $repoRoot
+}
 
 Write-Host ""
 Write-Host "Hermes environment is ready. You can now launch Hermes Desktop Agent." -ForegroundColor Green

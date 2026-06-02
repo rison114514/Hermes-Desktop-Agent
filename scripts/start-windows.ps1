@@ -635,6 +635,28 @@ if (-not (Test-WindowsNpmDependencies)) {
   Install-WindowsNpmDependencies
 }
 
+Invoke-Step "Installing MOD dependencies" {
+  $modsDir = Join-Path $repoRoot "mods"
+  if (Test-Path $modsDir) {
+    Get-ChildItem $modsDir -Directory | ForEach-Object {
+      $modPkg = Join-Path $_.FullName "package.json"
+      $modModules = Join-Path $_.FullName "node_modules"
+      if ((Test-Path $modPkg) -and -not (Test-Path $modModules)) {
+        Write-Host "  Installing dependencies for MOD: $($_.Name)..."
+        Push-Location $_.FullName
+        try {
+          npm install --no-audit --no-fund 2>&1 | Out-Null
+          Write-Host "  MOD $($_.Name) dependencies installed." -ForegroundColor Green
+        } catch {
+          Write-Host "  MOD $($_.Name) dependencies install failed: $_" -ForegroundColor Yellow
+        } finally {
+          Pop-Location
+        }
+      }
+    }
+  }
+}
+
 function Test-BuildCurrent {
   $stampPath = Join-Path $repoRoot ".hermes-build-stamp"
   if (-not (Test-Path $stampPath)) {
