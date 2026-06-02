@@ -4,9 +4,25 @@ import { SkillList } from './SkillList'
 import { ModelConfig } from './ModelConfig'
 import { ProxyConfig } from './ProxyConfig'
 import { ModPanel, ModSidebarPanels } from '@/components/ModPanel'
+import { DraggableCard } from '@/components/DraggableCard'
+import { useSidebarStore } from '@/store/sidebar'
+
+const CARDS: Record<string, React.FC> = {
+  skills: () => (
+    <div className="max-h-64 overflow-y-auto pr-0.5">
+      <SkillList />
+    </div>
+  ),
+  model: ModelConfig,
+  proxy: ProxyConfig,
+  mods: ModPanel,
+  'mod-panels': ModSidebarPanels,
+}
 
 export function SkillsPanel() {
   const [collapsed, setCollapsed] = useState(false)
+  const order = useSidebarStore((state) => state.order)
+  const moveCard = useSidebarStore((state) => state.moveCard)
 
   if (collapsed) {
     return (
@@ -45,23 +61,18 @@ export function SkillsPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto pr-1">
-        <SkillList />
+      <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+        {order.map((cardId, index) => {
+          const Card = CARDS[cardId]
+          if (!Card) return null
+          return (
+            <DraggableCard key={cardId} id={cardId} onMove={moveCard}>
+              {index === 0 ? null : null}
+              <Card />
+            </DraggableCard>
+          )
+        })}
       </div>
-
-      <div className="mt-5">
-        <ModelConfig />
-      </div>
-
-      <div className="mt-3">
-        <ProxyConfig />
-      </div>
-
-      <div className="mt-3">
-        <ModPanel />
-      </div>
-
-      <ModSidebarPanels />
     </aside>
   )
 }

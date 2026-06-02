@@ -128,6 +128,9 @@ declare global {
       }>>
       toggleMod: (modName: string, enabled: boolean) => Promise<{ ok: boolean }>
       uninstallMod: (modPath: string) => Promise<{ ok: boolean }>
+      personaList: () => Promise<Array<{ id: string; name: string; icon: string; description: string; active: boolean }>>
+      personaSwitch: (personaId: string) => Promise<{ ok: boolean; activeId?: string | null }>
+      callModIpc: (modName: string, method: string, args?: Record<string, unknown>) => Promise<unknown>
     }
   }
 }

@@ -13,6 +13,7 @@ type MarkdownBlock =
   | { type: 'ordered-list'; items: string[] }
   | { type: 'code'; language?: string; code: string }
   | { type: 'math'; math: string; display: boolean }
+  | { type: 'table'; headers: string[]; align: string[]; rows: string[][] }
 
 const KEYWORD_COLORS = {
   keyword: 'text-sky-300',
@@ -110,6 +111,32 @@ function parseMarkdown(content: string): MarkdownBlock[] {
       }
       blocks.push({ type: 'ordered-list', items })
       continue
+    }
+
+    // Table: starts with |, has a separator line (|:---|) as the second line
+    if (/^\|.+\|$/.test(line)) {
+      const tableLines: string[] = [line]
+      index += 1
+      while (index < lines.length && /^\|.+\|$/.test(lines[index])) {
+        tableLines.push(lines[index])
+        index += 1
+      }
+      if (tableLines.length >= 2 && /^\|[\s:|-]+\|$/.test(tableLines[1])) {
+        const headers = tableLines[0].split('|').filter(Boolean).map((h) => h.trim())
+        const align = tableLines[1].split('|').filter(Boolean).map((a) => {
+          const t = a.trim()
+          if (t.startsWith(':') && t.endsWith(':')) return 'center'
+          if (t.endsWith(':')) return 'right'
+          return 'left'
+        })
+        const rows = tableLines.slice(2).map((r) =>
+          r.split('|').filter(Boolean).map((c) => c.trim()),
+        )
+        blocks.push({ type: 'table', headers, align, rows })
+        continue
+      }
+      // Not a valid table — fall through to paragraph
+      index -= tableLines.length
     }
 
     const paragraphLines: string[] = []
@@ -287,6 +314,47 @@ function renderCodeBlock(code: string, language?: string) {
   )
 }
 
+function renderTable(headers: string[], align: string[], rows: string[][], key: string) {
+  const alignClass = (a: string) => {
+    if (a === 'center') return 'text-center'
+    if (a === 'right') return 'text-right'
+    return 'text-left'
+  }
+
+  return (
+    <div key={key} className="mt-3 overflow-x-auto rounded-2xl border border-white/10">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-white/10 bg-slate-950/70">
+            {headers.map((h, i) => (
+              <th
+                key={`th-${i}`}
+                className={`${alignClass(align[i] || 'left')} whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-300`}
+              >
+                {renderInlineMarkdown(h, `${key}-th-${i}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-white/5">
+          {rows.map((row, ri) => (
+            <tr key={`tr-${ri}`} className={ri % 2 === 0 ? 'bg-transparent' : 'bg-white/[0.02]'}>
+              {row.map((cell, ci) => (
+                <td
+                  key={`td-${ri}-${ci}`}
+                  className={`${alignClass(align[ci] || 'left')} px-4 py-2 text-slate-200`}
+                >
+                  {renderInlineMarkdown(cell, `${key}-${ri}-${ci}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function renderMarkdown(content: string) {
   return parseMarkdown(content).map((block, index) => {
     const key = `markdown-block-${index}`
@@ -342,6 +410,8 @@ function renderMarkdown(content: string) {
         return <div key={key}>{renderCodeBlock(block.code, block.language)}</div>
       case 'math':
         return renderMath(block.math, block.display, key)
+      case 'table':
+        return renderTable(block.headers, block.align, block.rows, key)
       default:
         return null
     }

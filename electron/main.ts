@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
 import { access, readFile, rename, rm, stat } from 'node:fs/promises'
+import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOption, type HermesPermissionOutcome, type HermesPermissionRequest } from './hermes-bridge.js'
@@ -212,6 +213,9 @@ app.whenReady().then(async () => {
   registerShortcuts()
 
   void hermesBridge.start().then(async () => {
+    // Auto-load previously enabled MODs
+    await autoEnableMods()
+
     if (lastSessionId && hermesBridge.getSessionId() !== lastSessionId) {
       try {
         await hermesBridge.loadSession(lastSessionId, workspaceRoot)
@@ -253,8 +257,20 @@ app.on('will-quit', () => {
   tray?.destroy()
 })
 
+// MOD instance registry — stores full exports for enabled MODs
+const modInstances: Map<string, { exports: Record<string, unknown> }> = new Map()
+// MOD hook registry — hooks registered by enabled MODs
+const modHooks: Map<string, { onUserMessage?: (text: string) => string }> = new Map()
+
 ipcMain.handle('hermes:send-message', async (_event, message: string) => {
-  void hermesBridge.sendMessage(message).catch((error) => {
+  // Run MOD onUserMessage hooks before sending
+  let processed = message
+  for (const [, hooks] of modHooks) {
+    if (hooks.onUserMessage) {
+      try { processed = hooks.onUserMessage(processed) } catch { /* skip broken hooks */ }
+    }
+  }
+  void hermesBridge.sendMessage(processed).catch((error) => {
     mainWindow?.webContents.send('hermes:event', {
       type: 'stderr',
       payload: error instanceof Error ? error.message : 'Failed to send Hermes message.',
@@ -274,7 +290,16 @@ ipcMain.handle('hermes:permission-response', async (_event, requestId: string, o
   }
 
   pendingPermissionRequests.delete(requestId)
-  resolve(optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' })
+  if (optionId) {
+    resolve({
+      outcome: {
+        outcome: 'selected',
+        option_id: optionId,
+      },
+    })
+  } else {
+    resolve({ outcome: { outcome: 'cancelled' } })
+  }
   return { ok: true }
 })
 
@@ -329,10 +354,21 @@ ipcMain.handle('hermes:restart-backend', async () => {
 // --- MOD handlers ---
 
 ipcMain.handle('mods:scan', async () => {
-  return scanModsDirectory()
+  const mods = await scanModsDirectory()
+  // Mark auto-enabled MODs
+  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  let enabledList: string[] = []
+  try { enabledList = JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { /* noop */ }
+
+  return mods.map((m) => ({
+    ...m,
+    enabled: enabledList.includes(m.name) ? true : m.enabled,
+  }))
 })
 
 ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) => {
+  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+
   if (enabled) {
     const mod = await loadMod(path.join(process.cwd(), 'mods', modName))
     if (mod.exports?.main?.ipcHandlers) {
@@ -341,7 +377,26 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
         ipcMain.handle(prefixedChannel, (_e, ...args) => (handler as (...a: unknown[]) => unknown)(_e, ...args))
       }
     }
-    // Strip functions before IPC transfer — hooks/lifecycle stay in main process
+    // Register MOD instance and hooks
+    modInstances.set(modName, { exports: (mod.exports ?? {}) as Record<string, unknown> })
+    if (mod.exports?.hooks) {
+      modHooks.set(modName, mod.exports.hooks as { onUserMessage?: (text: string) => string })
+    }
+    // Call onEnable with mod context
+    if (mod.exports?.onEnable) {
+      const ctx = createModContext(modName, mod.path)
+      mod.exports.onEnable(ctx)
+    }
+    // Persist enabled MOD names
+    try {
+      const list: string[] = (() => { try { return JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { return [] } })()
+      if (!list.includes(modName)) {
+        list.push(modName)
+        writeFileSync(enabledPath, JSON.stringify(list), 'utf8')
+      }
+    } catch { /* noop */ }
+
+    // Strip functions before IPC transfer
     const serializable: Record<string, unknown> = {
       name: mod.name, path: mod.path, manifest: mod.manifest, enabled: true,
     }
@@ -355,7 +410,18 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
     }
     return { ok: true, mod: serializable }
   } else {
+    const instance = modInstances.get(modName)
+    modInstances.delete(modName)
+    modHooks.delete(modName)
+    if (instance?.exports?.onDisable) {
+      ;(instance.exports.onDisable as () => void)()
+    }
     reloadMod(modName)
+    // Remove from persisted enabled list
+    try {
+      const list: string[] = (() => { try { return JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { return [] } })()
+      writeFileSync(enabledPath, JSON.stringify(list.filter((n) => n !== modName)), 'utf8')
+    } catch { /* noop */ }
     return { ok: true }
   }
 })
@@ -363,6 +429,28 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
 ipcMain.handle('mods:uninstall', async (_event, modPath: string) => {
   await rm(modPath, { recursive: true, force: true })
   return { ok: true }
+})
+
+ipcMain.handle('mods:persona-list', async () => {
+  const instance = modInstances.get('hermes-persona')
+  if (!instance?.exports?.getPersonas) return []
+  return (instance.exports.getPersonas as () => Array<Record<string, unknown>>)()
+})
+
+ipcMain.handle('mods:persona-switch', async (_event, personaId: string) => {
+  const instance = modInstances.get('hermes-persona')
+  if (!instance?.exports?.setActivePersona) return { ok: false }
+  ;(instance.exports.setActivePersona as (id: string) => void)(personaId || '')
+  // Save to mod config
+  const configPath = path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+  try {
+    const { readFileSync, writeFileSync } = await import('node:fs')
+    const configs = (() => { try { return JSON.parse(readFileSync(configPath, 'utf8')) } catch { return {} } })()
+    if (!configs['hermes-persona']) configs['hermes-persona'] = {}
+    configs['hermes-persona'].activePersona = personaId || ''
+    writeFileSync(configPath, JSON.stringify(configs, null, 2), 'utf8')
+  } catch { /* noop */ }
+  return { ok: true, activeId: personaId || null }
 })
 
 ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
@@ -553,6 +641,35 @@ ipcMain.handle('hermes:get-config', async () => {
   return readHermesConfigSnapshot()
 })
 
+function createModContext(modName: string, modDir?: string) {
+  const configPath = path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+  return {
+    modName,
+    modDir: modDir || path.join(process.cwd(), 'mods', modName),
+    getConfig(key: string) {
+      try {
+        const raw = readFileSync(configPath, 'utf8')
+        const configs = JSON.parse(raw)
+        return configs[modName]?.[key]
+      } catch { return undefined }
+    },
+    setConfig(key: string, value: unknown) {
+      try {
+        const configs = (() => { try { return JSON.parse(readFileSync(configPath, 'utf8')) } catch { return {} } })()
+        if (!configs[modName]) configs[modName] = {}
+        if (value === undefined) delete configs[modName][key]
+        else configs[modName][key] = value
+        writeFileSync(configPath, JSON.stringify(configs, null, 2), 'utf8')
+      } catch { /* noop */ }
+    },
+    logger: {
+      info: (...args: unknown[]) => console.log(`[mod:${modName}]`, ...args),
+      warn: (...args: unknown[]) => console.warn(`[mod:${modName}]`, ...args),
+      error: (...args: unknown[]) => console.error(`[mod:${modName}]`, ...args),
+    },
+  }
+}
+
 ipcMain.handle('hermes:get-skills', async () => {
   return readHermesSkillsSnapshot()
 })
@@ -740,19 +857,12 @@ function updateTrayMenu() {
 
 async function requestHermesPermission(payload: unknown): Promise<HermesPermissionOutcome> {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    return { outcome: 'cancelled' }
+    return { outcome: { outcome: 'cancelled' } }
   }
 
   const request = createPermissionRequest(payload)
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      if (pendingPermissionRequests.delete(request.requestId)) {
-        resolve({ outcome: 'cancelled' })
-      }
-    }, 10 * 60 * 1000)
-
     pendingPermissionRequests.set(request.requestId, (outcome) => {
-      clearTimeout(timeout)
       resolve(outcome)
     })
 
@@ -916,6 +1026,30 @@ function workspaceHostPathFromHermesCwd(cwd: string) {
 
 async function assertWorkspaceExists(hostPath: string) {
   await access(hostPath)
+}
+
+async function autoEnableMods() {
+  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  let enabledList: string[] = []
+  try { enabledList = JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { return }
+
+  if (!enabledList.length) return
+
+  for (const modName of enabledList) {
+    try {
+      const mod = await loadMod(path.join(process.cwd(), 'mods', modName))
+      modInstances.set(modName, { exports: (mod.exports ?? {}) as Record<string, unknown> })
+      if (mod.exports?.hooks) {
+        modHooks.set(modName, mod.exports.hooks as { onUserMessage?: (text: string) => string })
+      }
+      if (mod.exports?.onEnable) {
+        mod.exports.onEnable(createModContext(modName, mod.path))
+      }
+      console.log(`[mods] auto-enabled: ${modName}`)
+    } catch (error) {
+      console.warn(`[mods] failed to auto-enable ${modName}:`, error instanceof Error ? error.message : error)
+    }
+  }
 }
 
 async function lookupSessionTitle(sessionId: string): Promise<string | null> {

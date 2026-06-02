@@ -1,0 +1,23 @@
+{
+  "name": "hermes-ssh",
+  "version": "1.0.0",
+  "description": "远程服务器管理 MOD — SSH 连接、文件读写、命令执行、项目部署",
+  "author": "Hermes Desktop",
+  "icon": "server",
+  "entry": "index.cjs",
+  "hermesVersion": ">=0.1.0",
+  "permissions": ["panels", "skills", "ipc", "config", "fs"],
+  "panels": {
+    "sidebar": { "type": "ssh-manager", "title": "SSH", "icon": "terminal" }
+  },
+  "config": {
+    "servers": { "type": "string", "default": "[]", "label": "服务器列表 (JSON)" }
+  },
+  "skills": [
+    { "id": "ssh-exec", "name": "ssh-exec", "description": "在远程服务器上执行 Shell 命令", "category": "远程管理" },
+    { "id": "ssh-list", "name": "ssh-list", "description": "列出远程服务器目录文件", "category": "远程管理" },
+    { "id": "ssh-read", "name": "ssh-read", "description": "读取远程服务器上的文件内容", "category": "远程管理" },
+    { "id": "ssh-write", "name": "ssh-write", "description": "将内容写入远程服务器文件", "category": "远程管理" },
+    { "id": "ssh-status", "name": "ssh-status", "description": "查看远程服务器连接状态和系统信息", "category": "远程管理" }
+  ]
+}

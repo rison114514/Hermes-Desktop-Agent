@@ -32,8 +32,8 @@ export type HermesCommandInfo = {
 }
 
 export type HermesPermissionOutcome =
-  | { outcome: 'selected'; optionId: string }
-  | { outcome: 'cancelled' }
+  | { outcome: { outcome: 'selected'; option_id: string } }
+  | { outcome: { outcome: 'cancelled' } }
 
 export type HermesPermissionHandler = (payload: unknown) => Promise<HermesPermissionOutcome> | HermesPermissionOutcome
 
@@ -269,12 +269,13 @@ export class HermesBridge extends EventEmitter {
 
     this.sessionId = sessionId
     this.activeMessageIds.clear()
-    this.scheduleHistoryFlush(2000)
+    this.scheduleHistoryFlush(3000)
     this.historyMaxTimeout = setTimeout(() => {
       if (this.loadingSessionHistory && this.historyTurns.length > 0) {
+        console.warn('[hermes] history flush max timeout reached, forcing flush with', this.historyTurns.length, 'turns')
         this.flushHistoryTurns()
       }
-    }, 5000)
+    }, 10000)
   }
 
   async startNewSession(workspacePath?: string) {
@@ -703,7 +704,7 @@ export class HermesBridge extends EventEmitter {
 
   private async resolvePermissionRequest(payload: unknown): Promise<HermesPermissionOutcome> {
     if (!this.permissionHandler) {
-      return { outcome: 'cancelled' }
+      return { outcome: { outcome: 'cancelled' } }
     }
 
     try {
@@ -716,7 +717,7 @@ export class HermesBridge extends EventEmitter {
           detail: error instanceof Error ? error.message : 'Permission request failed.',
         },
       })
-      return { outcome: 'cancelled' }
+      return { outcome: { outcome: 'cancelled' } }
     }
   }
 
@@ -834,6 +835,11 @@ export class HermesBridge extends EventEmitter {
 
     if (kind === 'usage_update') {
       return
+    }
+
+    // Log unknown session update kinds to diagnose missing messages
+    if (kind) {
+      console.warn('[hermes] unknown session update kind:', kind, 'keys:', Object.keys(updateRecord).slice(0, 5))
     }
 
     this.emitEvent({

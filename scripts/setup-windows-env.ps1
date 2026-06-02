@@ -564,43 +564,6 @@ function Ensure-HermesModelConfigured {
     return
   }
 
-  Invoke-Step "Checking Hermes model configuration" {
-    $checkScript = @'
-set -e
-export PATH="$HOME/.local/bin:$PATH"
-hermes config check >/dev/null 2>&1
-'@
-    if (Test-WslBash $DistroName $checkScript) {
-      Write-Host "Hermes model configuration exists."
-      return
-    }
-
-    Write-Host "Hermes model is not configured." -ForegroundColor Yellow
-    Write-Host "Default provider: DeepSeek"
-    Write-Host "Default model: deepseek-v4-pro"
-    Write-Host "Base URL: https://api.deepseek.com"
-    $apiKey = Read-Host "Paste DeepSeek API key, or press Enter to skip and configure manually later"
-
-    if ([string]::IsNullOrWhiteSpace($apiKey)) {
-      Write-Host "Skipped model configuration. Configure later inside Ubuntu with: hermes model" -ForegroundColor Yellow
-      return
-    }
-
-    try {
-      Set-HermesDeepSeekConfig $DistroName $apiKey
-      Write-Host "DeepSeek configuration was written."
-    } catch {
-      Write-Host "Automatic DeepSeek configuration did not pass Hermes validation." -ForegroundColor Yellow
-      Write-Host "Falling back to the official Hermes model wizard." -ForegroundColor Yellow
-      $wizardScript = @'
-set -e
-export PATH="$HOME/.local/bin:$PATH"
-hermes model
-hermes config check
-'@
-      Invoke-WslBash $DistroName $wizardScript
-    }
-  }
 }
 
 function Test-HermesAcp {

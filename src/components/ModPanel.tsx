@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronDown, Package, PackageOpen, RefreshCw, Trash2 } from 'lucide-react'
 import { useModsStore } from '@/store/mods'
 import type { LoadedMod } from '@/store/mods'
+import { SSHPanel } from '@/components/SSHPanel'
 
 export function ModPanel() {
   const mods = useModsStore((state) => state.mods)
@@ -9,6 +10,11 @@ export function ModPanel() {
   const removeMod = useModsStore((state) => state.removeMod)
   const [open, setOpen] = useState(false)
   const [scanning, setScanning] = useState(false)
+
+  // Auto-scan on mount
+  useEffect(() => {
+    void handleScan()
+  }, [])
 
   const handleScan = async () => {
     if (!window.hermesDesktop?.scanMods) return
@@ -73,7 +79,7 @@ export function ModPanel() {
             </button>
           </div>
 
-          <div className="max-h-56 space-y-2 overflow-y-auto">
+          <div className="max-h-64 space-y-2 overflow-y-auto">
             {mods.length === 0 ? (
               <div className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-4 text-center">
                 <PackageOpen className="mx-auto mb-2 h-5 w-5 text-slate-500" />
@@ -149,7 +155,18 @@ export function ModSidebarPanels() {
   return (
     <>
       {panels.map((mod) => {
-        const panel = mod.exports!.panels!.sidebar as Record<string, string>
+        const panel = mod.exports!.panels!.sidebar as Record<string, unknown>
+        const panelType = String(panel.type || 'info')
+
+        if (panelType === 'persona-list') {
+          return <PersonaListPanel key={mod.name} modName={mod.name} title={String(panel.title || '人格')} emptyText={String(panel.emptyText || '未找到人格定义')} />
+        }
+
+        if (panelType === 'ssh-manager') {
+          return <SSHPanel key={mod.name} />
+        }
+
+        // Default info panel
         return (
           <div key={mod.name} className="mt-3 rounded-2xl border border-emerald-300/20 bg-emerald-400/8 px-4 py-3">
             <p className="text-[11px] uppercase tracking-[0.24em] text-emerald-200/70">{String(panel.title || mod.name)}</p>
@@ -160,4 +177,71 @@ export function ModSidebarPanels() {
       })}
     </>
   )
+}
+
+function PersonaListPanel({ title, emptyText }: { modName: string; title: string; emptyText: string }) {
+  const [personas, setPersonas] = useState<Array<{ id: string; name: string; icon: string; description: string; active: boolean }>>([])
+
+  useEffect(() => {
+    refreshList()
+  }, [])
+
+  const refreshList = async () => {
+    if (!window.hermesDesktop?.personaList) return
+    try {
+      const list = await window.hermesDesktop.personaList()
+      setPersonas(list)
+    } catch { /* noop */ }
+  }
+
+  const handleSwitch = async (personaId: string) => {
+    if (!window.hermesDesktop?.personaSwitch) return
+    await window.hermesDesktop.personaSwitch(personaId)
+    await refreshList()
+  }
+
+  return (
+    <div className="mt-3 rounded-[28px] border border-white/10 bg-white/5 p-4">
+      <p className="text-xs uppercase tracking-[0.28em] text-slate-400">{title}</p>
+      <div className="mt-3 space-y-2">
+        {personas.length === 0 ? (
+          <p className="py-3 text-center text-xs text-slate-500">{emptyText}</p>
+        ) : (
+          personas.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => void handleSwitch(p.active ? '' : p.id)}
+              className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                p.active
+                  ? 'border-amber-300/30 bg-amber-300/12'
+                  : 'border-white/10 bg-slate-950/80 hover:border-white/20'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-base">{iconEmoji(p.icon)}</span>
+                <div className="min-w-0 flex-1">
+                  <p className={`text-sm font-medium ${p.active ? 'text-amber-100' : 'text-slate-100'}`}>
+                    {p.name}
+                    {p.active ? <span className="ml-1.5 text-[11px] text-amber-200/70">当前</span> : null}
+                  </p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500">{p.description}</p>
+                </div>
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function iconEmoji(icon: string): string {
+  switch (icon) {
+    case 'pen': return '✍️'
+    case 'code': return '💻'
+    case 'book': return '📖'
+    case 'bot': return '🤖'
+    default: return '🧩'
+  }
 }

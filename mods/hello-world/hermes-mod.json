@@ -4,7 +4,7 @@
   "description": "A hello-world example MOD that demonstrates the Hermes MOD system",
   "author": "Hermes Desktop",
   "icon": "smile",
-  "entry": "index.js",
+  "entry": "index.cjs",
   "hermesVersion": ">=0.1.0",
   "permissions": ["panels", "hooks", "config"],
   "config": {

@@ -591,30 +591,6 @@ hermes --version
 function Ensure-HermesModelConfigured {
   param([string]$DistroName)
 
-  Invoke-Step "Checking Hermes model configuration" {
-    $script = @'
-set -e
-export PATH="$HOME/.local/bin:$PATH"
-if hermes config check >/tmp/hermes-config-check.log 2>&1; then
-  if hermes doctor >/tmp/hermes-doctor.log 2>&1; then
-    echo "Hermes configuration looks ready."
-    exit 0
-  fi
-fi
-
-echo ""
-echo "Hermes model/provider is not fully configured."
-echo "Official flow: run 'hermes model' outside a chat session, choose a provider, enter API credentials, then launch Hermes again."
-echo "DeepSeek reference: choose DeepSeek, Base URL https://api.deepseek.com, model deepseek-v4-pro."
-echo ""
-echo "Starting Hermes model setup wizard now..."
-hermes model
-echo ""
-echo "Rechecking Hermes configuration..."
-hermes config check
-'@
-    Invoke-WslBashInteractive $DistroName $script
-  }
 }
 
 Require-NodeRuntime

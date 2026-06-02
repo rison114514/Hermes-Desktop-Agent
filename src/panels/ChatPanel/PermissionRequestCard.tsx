@@ -44,7 +44,7 @@ export function PermissionRequestCard({ request }: PermissionRequestCardProps) {
   }
 
   return (
-    <div className="rounded-lg border border-amber-300/25 bg-amber-300/10 p-4 shadow-2xl shadow-black/20">
+    <div className="max-h-96 overflow-y-auto rounded-lg border border-amber-300/25 bg-amber-300/10 p-4 shadow-2xl shadow-black/20">
       <div className="flex items-start gap-3">
         <div className="mt-0.5 rounded-md border border-amber-200/20 bg-amber-200/10 p-2 text-amber-100">
           <ShieldAlert className="h-4 w-4" />
@@ -56,8 +56,8 @@ export function PermissionRequestCard({ request }: PermissionRequestCardProps) {
               <span className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-slate-300">{request.toolKind}</span>
             ) : null}
           </div>
-          <p className="mt-1 text-sm text-slate-300">{request.title}</p>
-          {request.description ? <p className="mt-1 text-xs text-slate-400">{request.description}</p> : null}
+          <p className="mt-1 line-clamp-2 text-sm text-slate-300">{request.title}</p>
+          {request.description ? <p className="mt-1 line-clamp-3 text-xs text-slate-400">{request.description}</p> : null}
         </div>
       </div>
 

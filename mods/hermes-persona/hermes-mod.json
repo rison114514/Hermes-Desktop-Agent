@@ -1,0 +1,13 @@
+{
+  "name": "hermes-persona",
+  "version": "1.0.0",
+  "description": "人格切换 MOD — 多套预设人格模板，共享上下文记忆，一键切换 Agent 性格与风格",
+  "author": "Hermes Desktop",
+  "icon": "users",
+  "entry": "index.cjs",
+  "hermesVersion": ">=0.1.0",
+  "permissions": ["panels", "hooks", "config"],
+  "config": {
+    "activePersona": { "type": "string", "default": "", "label": "当前激活人格" }
+  }
+}

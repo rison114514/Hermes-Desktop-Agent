@@ -51,6 +51,10 @@ const api = {
   scanMods: () => ipcRenderer.invoke('mods:scan'),
   toggleMod: (modName: string, enabled: boolean) => ipcRenderer.invoke('mods:toggle', modName, enabled),
   uninstallMod: (modPath: string) => ipcRenderer.invoke('mods:uninstall', modPath),
+  personaList: () => ipcRenderer.invoke('mods:persona-list'),
+  personaSwitch: (personaId: string) => ipcRenderer.invoke('mods:persona-switch', personaId),
+  callModIpc: (modName: string, method: string, args?: Record<string, unknown>) =>
+    ipcRenderer.invoke(`mod:${modName}:${method}`, args),
 }
 
 contextBridge.exposeInMainWorld('hermesDesktop', api)
