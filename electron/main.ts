@@ -1323,7 +1323,7 @@ async function readHermesSkillsSnapshot(): Promise<HermesSkillSnapshot[]> {
     const content = await runWslCommand([
       'bash',
       '-lc',
-      'find ~/.hermes/skills -mindepth 2 -maxdepth 2 -type d -printf "%P\\n" 2>/dev/null',
+      `find ~/.hermes/skills -mindepth 2 -maxdepth 2 -type d -not -name .git -not -path '*/.git/*' -printf "%P\\n" 2>/dev/null`,
     ])
 
     return content
