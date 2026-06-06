@@ -3,6 +3,7 @@ import { ChevronDown, Package, PackageOpen, RefreshCw, Trash2 } from 'lucide-rea
 import { useModsStore } from '@/store/mods'
 import type { LoadedMod } from '@/store/mods'
 import { SSHPanel } from '@/components/SSHPanel'
+import { TodoPanel } from '@/components/TodoPanel'
 
 export function ModPanel() {
   const mods = useModsStore((state) => state.mods)
@@ -166,6 +167,10 @@ export function ModSidebarPanels() {
           return <SSHPanel key={mod.name} />
         }
 
+        if (panelType === 'todo-list') {
+          return <TodoPanel key={mod.name} />
+        }
+
         // Default info panel
         return (
           <div key={mod.name} className="mt-3 rounded-2xl border border-emerald-300/20 bg-emerald-400/8 px-4 py-3">
@@ -182,9 +187,13 @@ export function ModSidebarPanels() {
 function PersonaListPanel({ title, emptyText }: { modName: string; title: string; emptyText: string }) {
   const [personas, setPersonas] = useState<Array<{ id: string; name: string; icon: string; description: string; active: boolean }>>([])
 
+  // Re-fetch on mount and whenever the backend signals MODs are ready, so the
+  // active persona loads even if this panel mounted before the mod IPC handlers
+  // were registered.
+  const modsReadyNonce = useModsStore((s) => s.modsReadyNonce)
   useEffect(() => {
     refreshList()
-  }, [])
+  }, [modsReadyNonce])
 
   const refreshList = async () => {
     if (!window.hermesDesktop?.personaList) return

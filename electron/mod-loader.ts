@@ -1,5 +1,4 @@
 import { access, readFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Dirent } from 'node:fs'
@@ -50,9 +49,10 @@ function resolveModsRoot(custom?: string): string {
   return MODS_DIR
 }
 
-function safeRequire(filePath: string): unknown {
-  const modRequire = createRequire(pathToFileURL(filePath))
-  return modRequire(filePath)
+async function safeImport(filePath: string): Promise<unknown> {
+  const url = pathToFileURL(filePath).href
+  // Force reload: append cache-busting query param
+  return import(`${url}?t=${Date.now()}`)
 }
 
 // Strip non-serializable parts (functions) from exports for IPC transfer
@@ -142,8 +142,8 @@ export async function loadMod(modDir: string): Promise<LoadedMod> {
 
   let exports: ModExports | undefined
   try {
-    const mod = safeRequire(entryFile) as Record<string, unknown>
-    exports = (mod.default ?? mod) as ModExports
+    const mod = await safeImport(entryFile)
+    exports = ((mod as Record<string, unknown>).default ?? mod) as ModExports
   } catch (error) {
     throw new Error(`Failed to load entry: ${error instanceof Error ? error.message : String(error)}`)
   }
@@ -158,12 +158,7 @@ export async function loadMod(modDir: string): Promise<LoadedMod> {
 }
 
 export function reloadMod(name: string): void {
-  // Clear all require caches that belong to the mod
-  for (const key of Object.keys(require.cache ?? {})) {
-    if (key.includes(`mods${path.sep}${name}`)) {
-      delete require.cache[key]
-    }
-  }
+  // ESM import cache is cleared by the cache-busting query param in safeImport
 }
 
 function validateManifest(m: ModManifest): string[] {

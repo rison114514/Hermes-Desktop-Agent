@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, Sparkles } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
@@ -6,10 +6,30 @@ import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { PermissionRequestCard } from './PermissionRequestCard'
 import { SessionSwitcher } from './SessionSwitcher'
+import { TabBar } from '@/components/TabBar'
+import { useSessionStore } from '@/store/sessions'
 
 export function ChatPanel() {
   const connectionLabel = useChatStore((state) => state.connectionLabel)
   const permissionRequests = useChatStore((state) => state.permissionRequests)
+  const activeSessionId = useChatStore((state) => state.activeSessionId)
+  const setActiveSession = useChatStore((state) => state.setActiveSession)
+  const activeTabId = useSessionStore((state) => state.activeId)
+
+  // Keep the chat store's active session in sync with the selected tab.
+  // This must run as an effect, never during render.
+  useEffect(() => {
+    if (activeTabId && activeTabId !== useChatStore.getState().activeSessionId) {
+      setActiveSession(activeTabId)
+    }
+  }, [activeTabId, setActiveSession])
+
+  // Only show permission prompts that belong to the active tab.
+  const visiblePermissionRequests = useMemo(
+    () => permissionRequests.filter((request) => (request.sessionId ?? 'default') === activeSessionId),
+    [permissionRequests, activeSessionId],
+  )
+
   const session = useWorkspaceStore((state) => state.session)
   const sessionTitle = useWorkspaceStore((state) => state.sessionTitle)
   const [showSessionSwitcher, setShowSessionSwitcher] = useState(false)
@@ -18,6 +38,7 @@ export function ChatPanel() {
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-[var(--gradient-chat)]">
+      <TabBar />
       <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
         <div className="relative">
           <p className="text-xs uppercase tracking-[0.32em] text-cyan-200/70">对话</p>
@@ -38,10 +59,10 @@ export function ChatPanel() {
       </div>
 
       <MessageList />
-      {permissionRequests.length ? (
+      {visiblePermissionRequests.length ? (
         <div className="border-t border-white/10 px-6 py-4">
           <div className="space-y-3">
-            {permissionRequests.map((request) => (
+            {visiblePermissionRequests.map((request) => (
               <PermissionRequestCard key={request.requestId} request={request} />
             ))}
           </div>

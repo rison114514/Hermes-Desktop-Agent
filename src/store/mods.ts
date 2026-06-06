@@ -61,6 +61,11 @@ export interface ModContext {
 
 interface ModsStore {
   mods: LoadedMod[]
+  // Bumped when the backend finishes enabling MODs (mods:ready). Sidebar panels
+  // include this in their fetch effect deps so they re-fetch once the backend
+  // mod IPC handlers are registered.
+  modsReadyNonce: number
+  markModsReady: () => void
   setMods: (mods: LoadedMod[]) => void
   addMod: (mod: LoadedMod) => void
   removeMod: (name: string) => void
@@ -90,6 +95,8 @@ function saveConfigs(configs: Record<string, Record<string, unknown>>) {
 
 export const useModsStore = create<ModsStore>((set, get) => ({
   mods: [],
+  modsReadyNonce: 0,
+  markModsReady: () => set((s) => ({ modsReadyNonce: s.modsReadyNonce + 1 })),
   setMods: (mods) => set({ mods }),
   addMod: (mod) => set((s) => ({ mods: [...s.mods.filter((m) => m.name !== mod.name), mod] })),
   removeMod: (name) => set((s) => ({ mods: s.mods.filter((m) => m.name !== name) })),

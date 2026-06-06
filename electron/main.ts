@@ -1,11 +1,13 @@
-import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, screen } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
 import { access, readFile, rename, rm, stat } from 'node:fs/promises'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOption, type HermesPermissionOutcome, type HermesPermissionRequest } from './hermes-bridge.js'
+import { sessionManager, type SessionInfo } from './session-manager.js'
 import { loadMod, reloadMod, scanModsDirectory } from './mod-loader.js'
+import { syncModBridge, drainTodoCommands, type ModBridgeData } from './mod-bridge.js'
 import {
   canPreviewFile,
   FILE_PREVIEW_MAX_CHARS,
@@ -34,14 +36,18 @@ const __dirname = path.dirname(__filename)
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const hermesBridge = new HermesBridge()
-hermesBridge.setPermissionHandler((payload) => requestHermesPermission(payload))
+hermesBridge.setPermissionHandler((payload) => requestHermesPermission(payload, 'default'))
 const pendingPermissionRequests = new Map<string, (outcome: HermesPermissionOutcome) => void>()
 let permissionRequestSequence = 0
-let bridgeBound = false
 let isQuitting = false
 let workspaceRoot = process.cwd()
 let lastSessionId: string | undefined
 let currentSessionTitle: string | null = null
+// Tracks the in-flight autoEnableMods() call. Mod IPC handlers and the data
+// each mod loads in onEnable() only exist once this resolves, so mods:scan
+// awaits it before returning — that way sidebar panels never render and fetch
+// before their backend handlers are registered.
+let modsReadyPromise: Promise<void> | null = null
 
 type HermesConfigSnapshot = {
   provider: string
@@ -100,11 +106,31 @@ function createTray() {
 async function createWindow() {
   const state = await readWindowState(app.getPath('userData'))
 
+  // Validate saved coordinates are still on an active display (e.g. external
+  // monitor unplugged since last session). If not, fall back to defaults so
+  // the window is visible rather than stranded off-screen.
+  let winX = state.x
+  let winY = state.y
+  if (winX !== undefined && winY !== undefined) {
+    const displays = screen.getAllDisplays()
+    const onScreen = displays.some((d) => {
+      const { x, y, width, height } = d.workArea
+      // Title bar must be within bounds — just check the top-left corner
+      // falls inside at least one display.
+      return winX! >= x && winX! < x + width && winY! >= y && winY! < y + height
+    })
+    if (!onScreen) {
+      console.log('[window] saved position', winX, winY, 'is off-screen — resetting to defaults')
+      winX = undefined
+      winY = undefined
+    }
+  }
+
   mainWindow = new BrowserWindow({
     width: state.width,
     height: state.height,
-    x: state.x,
-    y: state.y,
+    x: winX,
+    y: winY,
     minWidth: 1080,
     minHeight: 680,
     frame: false,
@@ -159,13 +185,6 @@ async function createWindow() {
     console.log('[electron] did-finish-load', mainWindow?.webContents.getURL())
   })
 
-  if (!bridgeBound) {
-    hermesBridge.on('event', (event: HermesBridgeEvent) => {
-      mainWindow?.webContents.send('hermes:event', event)
-    })
-    bridgeBound = true
-  }
-
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -192,6 +211,54 @@ async function createWindow() {
   updateTrayMenu()
 }
 
+// Independent always-on-top memo widget. Loads the same renderer with a
+// '#todo-widget' hash so the React entry mounts only the compact TodoWidget.
+// It stays on top even when the main window is hidden/minimized, and talks to
+// the same hermes-todo mod instance over the shared mod IPC handlers.
+let todoWidgetWindow: BrowserWindow | null = null
+
+function openTodoWidgetWindow() {
+  if (todoWidgetWindow && !todoWidgetWindow.isDestroyed()) {
+    todoWidgetWindow.show()
+    todoWidgetWindow.focus()
+    return
+  }
+
+  todoWidgetWindow = new BrowserWindow({
+    width: 360,
+    height: 540,
+    minWidth: 280,
+    minHeight: 320,
+    frame: false,
+    transparent: false,
+    resizable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    backgroundColor: '#0b1018',
+    icon: getAppIconPath(),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  // 'screen-saver' level keeps it above full-screen apps, not just normal windows.
+  todoWidgetWindow.setAlwaysOnTop(true, 'screen-saver')
+
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL
+  if (devServerUrl) {
+    void todoWidgetWindow.loadURL(`${devServerUrl}#todo-widget`)
+  } else {
+    void todoWidgetWindow.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'), { hash: 'todo-widget' })
+  }
+
+  todoWidgetWindow.on('closed', () => {
+    todoWidgetWindow = null
+  })
+}
+
 function registerShortcuts() {
   globalShortcut.register('Super+H', () => {
     toggleWindowVisibility()
@@ -212,14 +279,32 @@ app.whenReady().then(async () => {
   createTray()
   registerShortcuts()
 
+  // Wire default bridge events with sessionId
+  hermesBridge.on('event', (event: HermesBridgeEvent) => {
+    mainWindow?.webContents.send('hermes:event', { ...event, sessionId: 'default' } as HermesBridgeEvent & { sessionId: string })
+  })
+
+  // Auto-load previously enabled MODs immediately — this only needs the mods
+  // directory, so it must not be gated behind the (slow) bridge warm-up below,
+  // or the renderer would scan and render panels before the mod IPC handlers
+  // are registered. Broadcast mods:ready so already-mounted panels re-fetch.
+  modsReadyPromise = autoEnableMods()
+    .then(() => {
+      mainWindow?.webContents.send('hermes:event', { type: 'mods:ready' } satisfies HermesBridgeEvent)
+    })
+    .catch((error) => {
+      console.warn('[mods] auto-enable failed', error instanceof Error ? error.message : error)
+    })
+
   void hermesBridge.start().then(async () => {
-    // Auto-load previously enabled MODs
-    await autoEnableMods()
+    // Register default session
+    sessionManager.registerSession('default', '主会话', workspaceRoot, hermesBridge)
 
     if (lastSessionId && hermesBridge.getSessionId() !== lastSessionId) {
       try {
         await hermesBridge.loadSession(lastSessionId, workspaceRoot)
         currentSessionTitle = await lookupSessionTitle(lastSessionId)
+        sessionManager.updateSession('default', { cwd: workspaceRoot, title: currentSessionTitle })
         queuePersistWorkspaceRoot(lastSessionId)
         const snapshot = await createWorkspaceSnapshot()
         mainWindow?.webContents.send('hermes:event', {
@@ -253,7 +338,13 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   isQuitting = true
   globalShortcut.unregisterAll()
-  hermesBridge.stop()
+  // Call onDisable for all enabled MODs so they can save state
+  for (const [, instance] of modInstances) {
+    if (instance?.exports?.onDisable) {
+      try { (instance.exports.onDisable as () => void)() } catch { /* noop */ }
+    }
+  }
+  sessionManager.closeAll()
   tray?.destroy()
 })
 
@@ -262,7 +353,68 @@ const modInstances: Map<string, { exports: Record<string, unknown> }> = new Map(
 // MOD hook registry — hooks registered by enabled MODs
 const modHooks: Map<string, { onUserMessage?: (text: string) => string }> = new Map()
 
-ipcMain.handle('hermes:send-message', async (_event, message: string) => {
+// Helper: get the currently active bridge, falling back to default
+function getActiveBridge(): HermesBridge {
+  return sessionManager.activeBridge ?? hermesBridge
+}
+
+// ---- Mod → Agent bridge helpers -------------------------------------------
+// Sessions that already received the composed mod guidance injection. Keyed by
+// the resolved session id, so each new/loaded session gets the guidance once.
+const bridgeInjectedSessions = new Set<string>()
+
+// Call a mod's raw IPC handler directly (modInstances keeps the un-serialized
+// exports, so the handler functions are intact). Returns null if unavailable.
+function callModHandler(modName: string, method: string, args?: unknown): unknown {
+  const handlers = (modInstances.get(modName)?.exports as {
+    main?: { ipcHandlers?: Record<string, (...a: unknown[]) => unknown> }
+  } | undefined)?.main?.ipcHandlers
+  const fn = handlers?.[method]
+  if (typeof fn !== 'function') return null
+  try { return fn(null, args) } catch { return null }
+}
+
+// Compose every enabled mod's systemPrompt hook (each does `base + '...'`).
+function composeModSystemPrompt(): string {
+  let out = ''
+  for (const [, inst] of modInstances) {
+    const fn = (inst.exports as { hooks?: { systemPrompt?: (base: string) => string } }).hooks?.systemPrompt
+    if (typeof fn === 'function') {
+      try { out = fn(out) } catch { /* skip broken hook */ }
+    }
+  }
+  return out.trim()
+}
+
+// Apply the agent's queued todo commands back into the hermes-todo mod.
+async function applyTodoCommands(): Promise<void> {
+  if (!modInstances.has('hermes-todo')) return
+  const commands = await drainTodoCommands()
+  for (const cmd of commands) {
+    const op = String(cmd.op || '')
+    if (op === 'add') callModHandler('hermes-todo', 'add', cmd)
+    else if (op === 'toggle') callModHandler('hermes-todo', 'toggle', { index: cmd.index })
+    else if (op === 'remove') callModHandler('hermes-todo', 'remove', { index: cmd.index })
+    else if (op === 'clear-done') callModHandler('hermes-todo', 'clear-done')
+  }
+}
+
+// Push the current todo list + SSH configs (incl. secrets) and skill docs into
+// WSL so the agent can read them. No-op when neither mod is enabled.
+async function syncModBridgeNow(): Promise<void> {
+  const hasTodo = modInstances.has('hermes-todo')
+  const hasSsh = modInstances.has('hermes-ssh')
+  if (!hasTodo && !hasSsh) return
+  const data: ModBridgeData = {
+    todos: hasTodo ? ((callModHandler('hermes-todo', 'list') as unknown[]) ?? []) : [],
+    sshServers: hasSsh ? ((callModHandler('hermes-ssh', 'get-configs') as unknown[]) ?? []) : [],
+  }
+  try { await syncModBridge(data) } catch (err) {
+    console.warn('[mod-bridge] sync failed:', err instanceof Error ? err.message : err)
+  }
+}
+
+ipcMain.handle('hermes:send-message', async (_event, message: string, sessionId?: string) => {
   // Run MOD onUserMessage hooks before sending
   let processed = message
   for (const [, hooks] of modHooks) {
@@ -270,17 +422,34 @@ ipcMain.handle('hermes:send-message', async (_event, message: string) => {
       try { processed = hooks.onUserMessage(processed) } catch { /* skip broken hooks */ }
     }
   }
-  void hermesBridge.sendMessage(processed).catch((error) => {
+
+  // Mod → Agent bridge: apply any todo edits the agent queued last turn, then
+  // refresh the WSL data files so this turn reads current todos/SSH info.
+  await applyTodoCommands()
+  await syncModBridgeNow()
+
+  // Inject the composed mod guidance once per session, so the agent is told the
+  // bridge files / hermes-mods skills exist even if it hasn't browsed skills.
+  const injectKey = sessionId || sessionManager.activeSession?.id || 'default'
+  if (!bridgeInjectedSessions.has(injectKey)) {
+    const guidance = composeModSystemPrompt()
+    if (guidance) processed = `${guidance}\n\n---\n\n${processed}`
+    bridgeInjectedSessions.add(injectKey)
+  }
+
+  const bridge = sessionId ? sessionManager.getSession(sessionId)?.bridge : getActiveBridge()
+  void (bridge ?? getActiveBridge()).sendMessage(processed).catch((error) => {
     mainWindow?.webContents.send('hermes:event', {
       type: 'stderr',
       payload: error instanceof Error ? error.message : 'Failed to send Hermes message.',
-    } satisfies HermesBridgeEvent)
+      sessionId: sessionId || sessionManager.activeSession?.id || 'default',
+    } satisfies HermesBridgeEvent & { sessionId: string })
   })
   return { ok: true }
 })
 
 ipcMain.handle('hermes:cancel-message', async () => {
-  return hermesBridge.cancelActivePrompt()
+  return getActiveBridge().cancelActivePrompt()
 })
 
 ipcMain.handle('hermes:permission-response', async (_event, requestId: string, optionId?: string | null) => {
@@ -304,28 +473,34 @@ ipcMain.handle('hermes:permission-response', async (_event, requestId: string, o
 })
 
 ipcMain.handle('hermes:list-sessions', async () => {
-  return hermesBridge.listSessions()
+  return getActiveBridge().listSessions()
 })
 
 ipcMain.handle('hermes:load-session', async (_event, sessionId: string, cwd: string) => {
   const nextWorkspaceRoot = workspaceHostPathFromHermesCwd(cwd)
   await assertWorkspaceExists(nextWorkspaceRoot)
   workspaceRoot = nextWorkspaceRoot
-  await hermesBridge.loadSession(sessionId, workspaceRoot)
+  bridgeInjectedSessions.clear()
+  const bridge = getActiveBridge()
+  await bridge.loadSession(sessionId, workspaceRoot)
   currentSessionTitle = await lookupSessionTitle(sessionId)
+  sessionManager.updateActive({ cwd: workspaceRoot, title: currentSessionTitle })
   queuePersistWorkspaceRoot(sessionId)
   return createWorkspaceSnapshot()
 })
 
 ipcMain.handle('hermes:new-session', async () => {
   currentSessionTitle = null
-  await hermesBridge.startNewSession(workspaceRoot)
-  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
+  bridgeInjectedSessions.clear()
+  const bridge = getActiveBridge()
+  await bridge.startNewSession(workspaceRoot)
+  sessionManager.updateActive({ cwd: workspaceRoot, title: null })
+  queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
 })
 
 ipcMain.handle('proxy:set-config', async (_event, config) => {
-  hermesBridge.setProxyConfig(config)
+  getActiveBridge().setProxyConfig(config)
   return { ok: true }
 })
 
@@ -346,14 +521,70 @@ ipcMain.handle('proxy:detect-host', async () => {
 })
 
 ipcMain.handle('hermes:restart-backend', async () => {
-  hermesBridge.stop()
-  await hermesBridge.start()
+  const bridge = getActiveBridge()
+  bridge.stop()
+  await bridge.start()
   return { ok: true }
+})
+
+// --- Session (multi-tab) handlers ---
+
+ipcMain.handle('session:create', async (_event, name: string, cwd?: string) => {
+  const session = await sessionManager.createSession(name, cwd || workspaceRoot)
+  // Each session bridge needs its own permission handler, otherwise tool
+  // permission prompts in non-default tabs are silently auto-cancelled.
+  session.bridge.setPermissionHandler((payload) => requestHermesPermission(payload, session.id))
+  // Wire up event forwarding for this session's bridge
+  session.bridge.on('event', (event: HermesBridgeEvent) => {
+    mainWindow?.webContents.send('hermes:event', { ...event, sessionId: session.id } as HermesBridgeEvent & { sessionId: string })
+  })
+  return { id: session.id, name: session.name, cwd: session.cwd }
+})
+
+ipcMain.handle('session:close', async (_event, sessionId: string) => {
+  await sessionManager.closeSession(sessionId)
+  // Follow the active session's workspace after a close re-selects another tab.
+  const active = sessionManager.activeSession
+  if (active) {
+    workspaceRoot = active.cwd
+    currentSessionTitle = active.title
+  }
+  return { ok: true }
+})
+
+ipcMain.handle('session:switch', async (_event, sessionId: string) => {
+  const ok = sessionManager.setActive(sessionId)
+  if (!ok) {
+    return { ok: false, sessions: sessionManager.listSessions() }
+  }
+
+  // Switching a tab must also switch the workspace context: cwd, file tree,
+  // and the cached slash-commands all belong to the newly-active session.
+  const active = sessionManager.activeSession
+  if (active) {
+    workspaceRoot = active.cwd
+    currentSessionTitle = active.title
+    queuePersistWorkspaceRoot(active.bridge.getSessionId() ?? undefined)
+  }
+
+  const snapshot = await createWorkspaceSnapshot()
+  const commands = getActiveBridge().getCachedCommands()
+  return { ok, sessions: sessionManager.listSessions(), snapshot, commands }
+})
+
+ipcMain.handle('session:list', async () => {
+  return sessionManager.listSessions()
 })
 
 // --- MOD handlers ---
 
 ipcMain.handle('mods:scan', async () => {
+  // Wait for auto-enable to finish registering mod IPC handlers and loading
+  // each mod's saved data, so panels rendered from this scan can fetch
+  // successfully on mount instead of racing an unregistered handler.
+  if (modsReadyPromise) {
+    try { await modsReadyPromise } catch { /* noop */ }
+  }
   const mods = await scanModsDirectory()
   // Mark auto-enabled MODs
   const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
@@ -387,6 +618,8 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
       const ctx = createModContext(modName, mod.path)
       mod.exports.onEnable(ctx)
     }
+    // Refresh the WSL bridge so a newly enabled todo/SSH mod is visible to agent.
+    if (modName === 'hermes-todo' || modName === 'hermes-ssh') void syncModBridgeNow()
     // Persist enabled MOD names
     try {
       const list: string[] = (() => { try { return JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { return [] } })()
@@ -456,8 +689,12 @@ ipcMain.handle('mods:persona-switch', async (_event, personaId: string) => {
 ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
   const worktree = await createHermesWorktree(workspaceRoot, options)
   workspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)
-  await hermesBridge.startNewSession(workspaceRoot)
-  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
+  const bridge = getActiveBridge()
+  await bridge.startNewSession(workspaceRoot)
+  currentSessionTitle = null
+  bridgeInjectedSessions.clear()
+  sessionManager.updateActive({ cwd: workspaceRoot, title: null })
+  queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return {
     worktree,
     snapshot: await createWorkspaceSnapshot(),
@@ -472,8 +709,12 @@ ipcMain.handle('workspace:switch-worktree', async (_event, worktreePath: string)
   const nextWorkspaceRoot = workspaceHostPathFromHermesCwd(worktreePath)
   await assertWorkspaceExists(nextWorkspaceRoot)
   workspaceRoot = nextWorkspaceRoot
-  await hermesBridge.startNewSession(workspaceRoot)
-  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
+  const bridge = getActiveBridge()
+  await bridge.startNewSession(workspaceRoot)
+  currentSessionTitle = null
+  bridgeInjectedSessions.clear()
+  sessionManager.updateActive({ cwd: workspaceRoot, title: null })
+  queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
 })
 
@@ -484,8 +725,12 @@ ipcMain.handle('workspace:select-directory', async () => {
 ipcMain.handle('workspace:switch-root', async (_event, hostPath: string) => {
   await assertWorkspaceExists(hostPath)
   workspaceRoot = hostPath
-  await hermesBridge.startNewSession(workspaceRoot)
-  queuePersistWorkspaceRoot(hermesBridge.getSessionId() ?? undefined)
+  const bridge = getActiveBridge()
+  await bridge.startNewSession(workspaceRoot)
+  currentSessionTitle = null
+  bridgeInjectedSessions.clear()
+  sessionManager.updateActive({ cwd: workspaceRoot, title: null })
+  queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
 })
 
@@ -499,7 +744,7 @@ ipcMain.handle('workspace:get-snapshot', async () => {
 
   return {
     cwd,
-    session: hermesBridge.getSessionId() ?? 'Local desktop session',
+    session: getActiveBridge().getSessionId() ?? 'Local desktop session',
     files: await readWorkspaceDirectory(cwd),
     tasks: [
       { id: 'task-layout', title: '完成三栏布局骨架', done: true },
@@ -675,7 +920,7 @@ ipcMain.handle('hermes:get-skills', async () => {
 })
 
 ipcMain.handle('hermes:get-commands', async () => {
-  return hermesBridge.getCachedCommands()
+  return getActiveBridge().getCachedCommands()
 })
 
 ipcMain.handle('windows:reveal-workspace', async () => {
@@ -761,6 +1006,24 @@ ipcMain.handle('window:close', async () => {
   isQuitting = true
   app.quit()
   return { ok: true }
+})
+
+ipcMain.handle('todo-widget:open', async () => {
+  openTodoWidgetWindow()
+  return { ok: true }
+})
+
+ipcMain.handle('todo-widget:close', async () => {
+  if (todoWidgetWindow && !todoWidgetWindow.isDestroyed()) todoWidgetWindow.close()
+  return { ok: true }
+})
+
+ipcMain.handle('todo-widget:set-pin', async (_event, pinned: boolean) => {
+  if (todoWidgetWindow && !todoWidgetWindow.isDestroyed()) {
+    todoWidgetWindow.setAlwaysOnTop(pinned, pinned ? 'screen-saver' : 'normal')
+    todoWidgetWindow.setSkipTaskbar(pinned)
+  }
+  return { ok: true, pinned }
 })
 
 function toggleWindowVisibility() {
@@ -855,12 +1118,12 @@ function updateTrayMenu() {
   )
 }
 
-async function requestHermesPermission(payload: unknown): Promise<HermesPermissionOutcome> {
+async function requestHermesPermission(payload: unknown, tabSessionId = 'default'): Promise<HermesPermissionOutcome> {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return { outcome: { outcome: 'cancelled' } }
   }
 
-  const request = createPermissionRequest(payload)
+  const request = createPermissionRequest(payload, tabSessionId)
   return new Promise((resolve) => {
     pendingPermissionRequests.set(request.requestId, (outcome) => {
       resolve(outcome)
@@ -869,11 +1132,12 @@ async function requestHermesPermission(payload: unknown): Promise<HermesPermissi
     mainWindow?.webContents.send('hermes:event', {
       type: 'permission:request',
       payload: request,
-    } satisfies HermesBridgeEvent)
+      sessionId: tabSessionId,
+    } as HermesBridgeEvent & { sessionId: string })
   })
 }
 
-function createPermissionRequest(payload: unknown): HermesPermissionRequest {
+function createPermissionRequest(payload: unknown, tabSessionId: string): HermesPermissionRequest {
   const record = asRecord(payload)
   const toolCall = asRecord(readUnknown(record, 'toolCall', 'tool_call'))
   const rawInput = asRecord(readUnknown(toolCall, 'rawInput', 'raw_input'))
@@ -886,7 +1150,7 @@ function createPermissionRequest(payload: unknown): HermesPermissionRequest {
 
   return {
     requestId,
-    sessionId: readString(record, 'sessionId', 'session_id'),
+    sessionId: tabSessionId,
     toolCallId: readString(toolCall, 'toolCallId', 'tool_call_id'),
     title,
     description,
@@ -997,7 +1261,7 @@ async function createWorkspaceSnapshot() {
 
   return {
     cwd: workspaceRoot,
-    session: hermesBridge.getSessionId() ?? 'Local desktop session',
+    session: getActiveBridge().getSessionId() ?? 'Local desktop session',
     sessionTitle: currentSessionTitle,
     files: await readWorkspaceDirectory(workspaceRoot),
     tasks: [
@@ -1042,6 +1306,13 @@ async function autoEnableMods() {
       if (mod.exports?.hooks) {
         modHooks.set(modName, mod.exports.hooks as { onUserMessage?: (text: string) => string })
       }
+      // Register MOD IPC handlers
+      if (mod.exports?.main?.ipcHandlers) {
+        for (const [channel, handler] of Object.entries(mod.exports.main.ipcHandlers)) {
+          const prefixedChannel = `mod:${modName}:${channel}`
+          ipcMain.handle(prefixedChannel, (_e, ...args) => (handler as (...a: unknown[]) => unknown)(_e, ...args))
+        }
+      }
       if (mod.exports?.onEnable) {
         mod.exports.onEnable(createModContext(modName, mod.path))
       }
@@ -1050,11 +1321,15 @@ async function autoEnableMods() {
       console.warn(`[mods] failed to auto-enable ${modName}:`, error instanceof Error ? error.message : error)
     }
   }
+
+  // Install the bridge skill docs + initial data so the agent discovers the
+  // hermes-mods skills at its very first session/new, not only after a prompt.
+  await syncModBridgeNow()
 }
 
 async function lookupSessionTitle(sessionId: string): Promise<string | null> {
   try {
-    const sessions = await hermesBridge.listSessions()
+    const sessions = await getActiveBridge().listSessions()
     const match = sessions.find((s) => s.sessionId === sessionId)
     return match?.title ?? null
   } catch {

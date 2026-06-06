@@ -39,7 +39,7 @@ type DesktopHermesWorktree = {
 declare global {
   interface Window {
     hermesDesktop: {
-      sendMessage: (message: string) => Promise<{ ok: boolean }>
+      sendMessage: (message: string, sessionId?: string) => Promise<{ ok: boolean }>
       cancelMessage: () => Promise<{ ok: boolean; cancelled: boolean }>
       respondHermesPermission: (requestId: string, optionId?: string | null) => Promise<{ ok: boolean; error?: string }>
       onHermesEvent: (listener: (event: HermesBridgeEvent) => void) => () => void
@@ -116,6 +116,9 @@ declare global {
       minimizeWindow: () => Promise<{ ok: boolean }>
       hideWindow: () => Promise<{ ok: boolean }>
       closeWindow: () => Promise<{ ok: boolean }>
+      openTodoWidget: () => Promise<{ ok: boolean }>
+      closeTodoWidget: () => Promise<{ ok: boolean }>
+      setTodoWidgetPin: (pinned: boolean) => Promise<{ ok: boolean; pinned: boolean }>
       setProxyConfig: (config: { enabled: boolean; type: string; host: string; port: number }) => Promise<{ ok: boolean }>
       detectProxyHost: () => Promise<{ host: string }>
       restartBackend: () => Promise<{ ok: boolean }>
@@ -131,6 +134,15 @@ declare global {
       personaList: () => Promise<Array<{ id: string; name: string; icon: string; description: string; active: boolean }>>
       personaSwitch: (personaId: string) => Promise<{ ok: boolean; activeId?: string | null }>
       callModIpc: (modName: string, method: string, args?: Record<string, unknown>) => Promise<unknown>
+      createSession: (name: string, cwd?: string) => Promise<{ id: string; name: string; cwd: string } | null>
+      closeSession: (sessionId: string) => Promise<{ ok: boolean }>
+      switchSession: (sessionId: string) => Promise<{
+        ok: boolean
+        sessions?: Array<{ id: string; name: string; cwd: string }>
+        snapshot?: DesktopWorkspaceSnapshot
+        commands?: Array<{ id: string; name: string; description: string }>
+      }>
+      listSessions: () => Promise<Array<{ id: string; name: string; cwd: string }>>
     }
   }
 }

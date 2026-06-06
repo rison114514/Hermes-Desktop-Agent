@@ -18,6 +18,7 @@ Thumbs.db
 .codex/
 .codex
 .worktrees/
+docs/
 .hermes-tmp/
 .hermes-install-stamp
 .hermes-build-stamp

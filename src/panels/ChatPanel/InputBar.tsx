@@ -2,6 +2,7 @@ import { ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, u
 import { ArrowUp, ClipboardPaste, Sparkles, Square } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useSkillsStore } from '@/store/skills'
+import { useSessionStore } from '@/store/sessions'
 import { cn } from '@/lib/utils'
 
 type SlashSuggestion = {
@@ -133,36 +134,40 @@ export function InputBar() {
     const content = expandPasteSummaries(displayContent).trim()
     const userId = createId('user')
     const assistantId = createId('assistant')
+    // Capture the target session up front so a tab switch mid-send can't route
+    // these writes (or the error fallbacks below) into the wrong session.
+    const sessionId = useSessionStore.getState().activeId || undefined
 
-    addMessage({ id: userId, role: 'user', content: displayContent })
+    addMessage({ id: userId, role: 'user', content: displayContent }, sessionId)
     addMessage({
       id: assistantId,
       role: 'assistant',
       content: '',
       streaming: true,
       label: 'Waiting',
-    })
+    }, sessionId)
     setActiveAssistant(assistantId)
     setConnectionLabel(slash ? `Sending Hermes command /${slash.query}` : 'Sending message to Hermes')
     setDraft('')
     pastePayloadsRef.current = []
 
     if (!window.hermesDesktop) {
-      replaceMessage(assistantId, 'Desktop bridge is not available.')
-      finalizeMessage(assistantId)
+      replaceMessage(assistantId, 'Desktop bridge is not available.', sessionId)
+      finalizeMessage(assistantId, sessionId)
       setActiveAssistant(null)
       setConnectionLabel('Desktop bridge unavailable')
       return
     }
 
     try {
-      await window.hermesDesktop.sendMessage(content)
+      await window.hermesDesktop.sendMessage(content, sessionId)
     } catch (error) {
       replaceMessage(
         assistantId,
         `Unable to connect to Hermes: ${error instanceof Error ? error.message : 'unknown error'}`,
+        sessionId,
       )
-      finalizeMessage(assistantId)
+      finalizeMessage(assistantId, sessionId)
       setActiveAssistant(null)
       setConnectionLabel('Send failed')
     }

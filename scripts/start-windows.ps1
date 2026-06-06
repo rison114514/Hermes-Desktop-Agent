@@ -630,6 +630,14 @@ Invoke-Step "Checking Hermes ACP in WSL" {
   Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null && hermes acp --help >/dev/null'
 }
 
+# Hermes is fail-closed: it auto-denies a permission request once approvals.timeout
+# (default 60s) elapses. There is no literal "infinite" value, so we set a very large
+# second count (~10 years) to make the wait effectively unbounded — letting the user
+# take as long as they need to approve a permission request.
+Invoke-Step "Setting Hermes approval timeout to effectively infinite" {
+  Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; hermes config set approvals.timeout 315360000'
+}
+
 if (-not (Test-WindowsNpmDependencies)) {
   Write-Host "Windows npm dependencies are missing, outdated, or incomplete." -ForegroundColor Yellow
   Install-WindowsNpmDependencies

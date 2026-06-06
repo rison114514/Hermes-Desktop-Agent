@@ -1,0 +1,24 @@
+{
+  "name": "hermes-todo",
+  "version": "1.0.0",
+  "description": "任务备忘录 MOD — 记录当前任务、追踪完成状态、AI 可读写",
+  "author": "Hermes Desktop",
+  "icon": "check",
+  "entry": "index.cjs",
+  "hermesVersion": ">=0.1.0",
+  "permissions": ["panels", "skills", "ipc", "config"],
+  "panels": {
+    "sidebar": { "type": "todo-list", "title": "任务备忘", "icon": "check" }
+  },
+  "config": {
+    "tasks": { "type": "string", "default": "[]", "label": "任务列表 (JSON)" }
+  },
+  "skills": [
+    { "id": "todo-list", "name": "todo-list", "description": "列出所有备忘录任务及其完成状态", "category": "备忘" },
+    { "id": "todo-add", "name": "todo-add", "description": "添加一条新任务。参数: title", "category": "备忘" },
+    { "id": "todo-done", "name": "todo-done", "description": "将指定任务标记为已完成。参数: index (任务序号)", "category": "备忘" },
+    { "id": "todo-undo", "name": "todo-undo", "description": "将已完成任务恢复为未完成。参数: index", "category": "备忘" },
+    { "id": "todo-remove", "name": "todo-remove", "description": "删除指定任务。参数: index", "category": "备忘" },
+    { "id": "todo-clear", "name": "todo-clear", "description": "清空所有已完成任务", "category": "备忘" }
+  ]
+}

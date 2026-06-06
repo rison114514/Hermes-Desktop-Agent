@@ -2,7 +2,7 @@
 // Panels use plain objects (serializable over IPC), rendered by ModPanel
 // Hooks & lifecycle run in the main process
 
-export default {
+module.exports = {
   // Sidebar panel — plain descriptor object rendered by ModPanel component
   panels: {
     sidebar: {

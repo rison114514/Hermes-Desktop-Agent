@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Bot, Info, TriangleAlert, User2, Wrench, CheckCircle2, ChevronDown } from 'lucide-react'
 import katex from 'katex'
@@ -233,6 +233,12 @@ function renderMath(math: string, display: boolean, key: string) {
 }
 
 function tokenizeCode(code: string, language?: string) {
+  // Very large blocks (e.g. big JSON tool args from a loaded session) cost a lot
+  // to tokenize for little highlighting value — render them as one plain token.
+  if (code.length > 20000) {
+    return [{ value: code }]
+  }
+
   const normalizedLanguage = language?.toLowerCase()
   const keywords =
     normalizedLanguage === 'json'
@@ -240,7 +246,11 @@ function tokenizeCode(code: string, language?: string) {
       : /\b(async|await|break|case|catch|class|const|continue|default|delete|else|export|extends|finally|for|from|function|if|import|in|instanceof|let|new|of|return|switch|throw|try|typeof|var|while|yield)\b/g
   const typeKeywords = /\b(Array|Boolean|Date|Error|Map|Number|Object|Promise|Record|Set|String|any|boolean|number|string|unknown|void)\b/g
   const functionPattern = /\b([A-Za-z_$][\w$]*)(?=\()/g
-  const stringPattern = /("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)/g
+  // Linear-time "unrolled" quoted-string match. The previous `(?:\\.|[^"])*`
+  // form was catastrophic-backtracking: `[^"]` also matches `\`, so a long run
+  // of backslashes / an unterminated quote (common in escaped JSON tool args)
+  // made matchAll hang forever and froze the whole UI.
+  const stringPattern = /("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|`[^`\\]*(?:\\.[^`\\]*)*`)/g
   const numberPattern = /\b(0x[\da-fA-F]+|\d+(?:\.\d+)?)\b/g
   const commentPattern = normalizedLanguage === 'bash' ? /(#[^\n]*)/g : /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)/g
   const punctuationPattern = /([{}()[\].,;:+\-*/=%<>!?|&])/g
@@ -519,11 +529,17 @@ function ToolCallShelf({ message }: { message: Message }) {
   )
 }
 
-export function MessageBubble({ message }: { message: Message }) {
+function MessageBubbleComponent({ message }: { message: Message }) {
   const isAssistant = message.role === 'assistant'
   const isSystem = message.role === 'system'
   const badge = message.label ?? (isAssistant ? 'assistant' : message.role)
   const Icon = isSystem ? (message.tone === 'error' ? TriangleAlert : Info) : isAssistant ? Bot : User2
+
+  // Parsing + syntax-highlighting markdown is expensive; cache it per content so
+  // re-renders triggered by unrelated prop changes (e.g. tool updates) don't
+  // re-tokenize. Combined with the React.memo wrapper below, this keeps history
+  // replay of large sessions at ~O(K) instead of re-rendering every bubble.
+  const renderedContent = useMemo(() => renderMarkdown(message.content), [message.content])
 
   return (
     <motion.article
@@ -567,7 +583,7 @@ export function MessageBubble({ message }: { message: Message }) {
           <ToolCard message={message} />
         ) : (
           <div className="space-y-3">
-            {renderMarkdown(message.content)}
+            {renderedContent}
             <ToolCallShelf message={message} />
           </div>
         )}
@@ -581,3 +597,9 @@ export function MessageBubble({ message }: { message: Message }) {
     </motion.article>
   )
 }
+
+// Memoized: the chat store returns the SAME message object reference for bubbles
+// that didn't change (msgs.map keeps unchanged items by identity), so a default
+// shallow prop compare lets unchanged bubbles skip re-render during the burst of
+// events emitted while replaying a loaded session's history.
+export const MessageBubble = memo(MessageBubbleComponent)

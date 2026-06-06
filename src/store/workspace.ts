@@ -86,7 +86,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     set((state) => ({
       cwd: snapshot.cwd,
       session: snapshot.session,
-      sessionTitle: snapshot.sessionTitle ?? state.sessionTitle,
+      // Distinguish an explicit null (title reset on workspace switch / new
+      // session) from an omitted field. `??` would treat the reset null as
+      // "no value" and keep the previous session's stale title.
+      sessionTitle: snapshot.sessionTitle === undefined ? state.sessionTitle : snapshot.sessionTitle,
       files: snapshot.files,
       tasks: snapshot.tasks,
       windows: {

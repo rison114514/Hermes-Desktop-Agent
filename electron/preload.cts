@@ -2,7 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { HermesBridgeEvent } from './hermes-bridge.js'
 
 const api = {
-  sendMessage: (message: string) => ipcRenderer.invoke('hermes:send-message', message),
+  sendMessage: (message: string, sessionId?: string) =>
+    ipcRenderer.invoke('hermes:send-message', message, sessionId),
   cancelMessage: () => ipcRenderer.invoke('hermes:cancel-message'),
   respondHermesPermission: (requestId: string, optionId?: string | null) =>
     ipcRenderer.invoke('hermes:permission-response', requestId, optionId),
@@ -44,6 +45,9 @@ const api = {
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   hideWindow: () => ipcRenderer.invoke('window:hide'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
+  openTodoWidget: () => ipcRenderer.invoke('todo-widget:open'),
+  closeTodoWidget: () => ipcRenderer.invoke('todo-widget:close'),
+  setTodoWidgetPin: (pinned: boolean) => ipcRenderer.invoke('todo-widget:set-pin', pinned),
   setProxyConfig: (config: { enabled: boolean; type: string; host: string; port: number }) =>
     ipcRenderer.invoke('proxy:set-config', config),
   detectProxyHost: () => ipcRenderer.invoke('proxy:detect-host'),
@@ -55,6 +59,10 @@ const api = {
   personaSwitch: (personaId: string) => ipcRenderer.invoke('mods:persona-switch', personaId),
   callModIpc: (modName: string, method: string, args?: Record<string, unknown>) =>
     ipcRenderer.invoke(`mod:${modName}:${method}`, args),
+  createSession: (name: string, cwd?: string) => ipcRenderer.invoke('session:create', name, cwd),
+  closeSession: (sessionId: string) => ipcRenderer.invoke('session:close', sessionId),
+  switchSession: (sessionId: string) => ipcRenderer.invoke('session:switch', sessionId),
+  listSessions: () => ipcRenderer.invoke('session:list'),
 }
 
 contextBridge.exposeInMainWorld('hermesDesktop', api)

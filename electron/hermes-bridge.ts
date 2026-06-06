@@ -16,6 +16,7 @@ export type HermesBridgeEvent =
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
   | { type: 'workspace:snapshot'; payload: unknown }
+  | { type: 'mods:ready' }
   | { type: 'exit'; payload: { code: number | null } }
 
 export type HermesSessionInfo = {
@@ -67,7 +68,7 @@ type JsonRpcMessage = {
 type PendingRequest = {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
-  timeout: NodeJS.Timeout
+  timeout?: NodeJS.Timeout
 }
 
 type HistoryTurn =
@@ -178,11 +179,15 @@ export class HermesBridge extends EventEmitter {
     })
 
     try {
+      // No timeout: a turn can block arbitrarily long while the agent waits for a
+      // human permission decision. A client-side timeout here would abandon the
+      // turn mid-approval and surface as a spurious auto-deny. The turn ends only
+      // when Hermes replies or the user explicitly cancels (cancelActivePrompt).
       const result = await this.sendRequest('session/prompt', {
         sessionId: this.sessionId,
         messageId: randomUUID(),
         prompt: [{ type: 'text', text: message }],
-      }, 10 * 60 * 1000)
+      }, 0)
 
       if (!this.promptCancelRequested) {
         const stopReason = this.readString(result, 'stopReason') ?? this.readString(result, 'stop_reason') ?? 'end_turn'
@@ -528,6 +533,9 @@ export class HermesBridge extends EventEmitter {
     }
   }
 
+  // Pass timeoutMs <= 0 (or non-finite) for requests that must wait indefinitely,
+  // e.g. session/prompt, which can legitimately block for a long time while the
+  // agent waits on a human permission decision (session/request_permission).
   private sendRequest(method: string, params: unknown, timeoutMs = 30_000) {
     if (!this.process) {
       return Promise.reject(new Error('Hermes ACP backend has not started.'))
@@ -537,10 +545,12 @@ export class HermesBridge extends EventEmitter {
     const payload = { jsonrpc: '2.0', id, method, params }
 
     return new Promise<unknown>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`ACP request timed out: ${method}`))
-      }, timeoutMs)
+      const timeout = timeoutMs > 0 && Number.isFinite(timeoutMs)
+        ? setTimeout(() => {
+            this.pending.delete(id)
+            reject(new Error(`ACP request timed out: ${method}`))
+          }, timeoutMs)
+        : undefined
 
       this.pending.set(id, { resolve, reject, timeout })
       this.process?.stdin.write(`${JSON.stringify(payload)}\n`, 'utf8')
@@ -739,7 +749,7 @@ export class HermesBridge extends EventEmitter {
       const messageId = this.readString(updateRecord, 'messageId') ?? this.readString(updateRecord, 'message_id') ?? undefined
       const text = normalizeMaybeText(extractAcpText(updateRecord.content) ?? undefined, 'assistant')
       if (text) {
-        if (this.loadingSessionHistory) {
+        if (this.isReplayMode()) {
           this.pushHistoryUserTurn(messageId, text)
           this.scheduleHistoryFlush()
           return
@@ -760,7 +770,7 @@ export class HermesBridge extends EventEmitter {
         return
       }
 
-      if (this.loadingSessionHistory) {
+      if (this.isReplayMode()) {
         this.pushHistoryAssistantChunk(messageId, delta)
         this.scheduleHistoryFlush()
         return
@@ -796,7 +806,7 @@ export class HermesBridge extends EventEmitter {
           status: 'running',
         },
       }
-      if (this.loadingSessionHistory) {
+      if (this.isReplayMode()) {
         this.pushHistoryTool(event)
         this.scheduleHistoryFlush()
         return
@@ -817,7 +827,7 @@ export class HermesBridge extends EventEmitter {
           status: 'completed',
         },
       }
-      if (this.loadingSessionHistory) {
+      if (this.isReplayMode()) {
         this.pushHistoryTool(event)
         this.scheduleHistoryFlush()
         return
@@ -877,6 +887,17 @@ export class HermesBridge extends EventEmitter {
       sessions,
       nextCursor: this.readString(record, 'nextCursor') ?? this.readString(record, 'next_cursor'),
     }
+  }
+
+  // Stream chunks (session/update) only ever arrive in two situations: a real
+  // user prompt is in flight (promptInFlight), or we are replaying a loaded
+  // session's history. Anything NOT tied to an in-flight prompt must be treated
+  // as history — even after a premature flush flipped loadingSessionHistory to
+  // false — otherwise the tail of a large session's history leaks into the live
+  // path and produces assistant messages that never receive assistant:done
+  // (stuck "输出中" bubbles + label frozen on "正在流式输出" + UI freeze).
+  private isReplayMode() {
+    return this.loadingSessionHistory || !this.promptInFlight
   }
 
   private clearHistoryReplay() {

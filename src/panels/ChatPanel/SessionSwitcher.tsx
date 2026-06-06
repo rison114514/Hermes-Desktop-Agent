@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { History, MessageSquarePlus, RefreshCw, Terminal } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
+import { useSessionStore } from '@/store/sessions'
 
 type HermesSessionInfo = {
   sessionId: string
@@ -55,7 +56,10 @@ export function SessionSwitcher({ onClose }: { onClose: () => void }) {
     if (!window.hermesDesktop) return
     setLoadingId(session.sessionId)
     try {
-      resetForSession(`Loading ACP session ${session.title || session.sessionId}...`)
+      // Force switch to default tab — session loading only works on the default bridge
+      useSessionStore.getState().setActive('default')
+      useChatStore.getState().setActiveSession('default')
+      resetForSession(`Loading ACP session ${session.title || session.sessionId}...`, 'default')
       const snapshot = await window.hermesDesktop.loadHermesSession(session.sessionId, session.cwd)
       setSnapshot(snapshot)
       onClose()

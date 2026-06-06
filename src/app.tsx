@@ -4,8 +4,10 @@ import { SkillsPanel } from '@/panels/SkillsPanel'
 import { WorkspacePanel } from '@/panels/WorkspacePanel'
 import { TitleBar } from '@/components/TitleBar'
 import { useChatStore } from '@/store/chat'
+import { useSessionStore } from '@/store/sessions'
 import { useDesktopWindowStore } from '@/store/window'
 import { useSkillsStore } from '@/store/skills'
+import { useModsStore } from '@/store/mods'
 import { useWorkspaceStore } from '@/store/workspace'
 import { useThemeStore } from '@/store/theme'
 
@@ -121,45 +123,53 @@ export default function App() {
     }
 
     return window.hermesDesktop.onHermesEvent((event) => {
+      const sid = (event as Record<string, unknown>).sessionId as string | undefined
+      // Workspace context (file tree, cwd, slash-commands) is a single global
+      // store shared by all tabs. Only the active session may write to it, or a
+      // background tab running a task would clobber the panel you're viewing.
+      // On switch, switchSession re-fetches an authoritative snapshot anyway.
+      const activeSid = useSessionStore.getState().activeId
+      const isForActiveSession = !sid || !activeSid || sid === activeSid
+
       if (event.type === 'user:message') {
         const currentAssistantId = useChatStore.getState().activeAssistantId
         if (event.payload.replay && currentAssistantId) {
-          finalizeMessage(currentAssistantId)
+          finalizeMessage(currentAssistantId, sid)
           setActiveAssistant(null)
         }
         addMessage({
           id: event.payload.id ?? `history-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'user',
           content: event.payload.text,
-        })
+        }, sid)
         setConnectionLabel(event.payload.replay ? 'Loaded historical user message' : 'User message received')
         return
       }
 
       if (event.type === 'assistant:start') {
-        touchAssistantMessage(event.payload.id ?? null)
+        touchAssistantMessage(event.payload.id ?? null, sid)
         setConnectionLabel(event.payload.model ? `正在通过 ${event.payload.model} 响应` : 'Hermes 正在响应')
         return
       }
 
       if (event.type === 'assistant:delta') {
-        const targetId = touchAssistantMessage(event.payload.id ?? null)
+        const targetId = touchAssistantMessage(event.payload.id ?? null, sid)
         if (!targetId) {
           return
         }
 
-        appendChunk(targetId, event.payload.delta)
+        appendChunk(targetId, event.payload.delta, sid)
         setConnectionLabel('正在流式输出')
         return
       }
 
       if (event.type === 'assistant:done') {
-        const targetId = touchAssistantMessage(event.payload.id ?? null)
+        const targetId = touchAssistantMessage(event.payload.id ?? null, sid)
         if (targetId && event.payload.text) {
-          replaceMessage(targetId, event.payload.text)
+          replaceMessage(targetId, event.payload.text, sid)
         }
         if (targetId) {
-          finalizeMessage(targetId)
+          finalizeMessage(targetId, sid)
         }
         setActiveAssistant(null)
         setConnectionLabel(event.payload.reason ? `已完成：${event.payload.reason}` : '空闲')
@@ -174,13 +184,15 @@ export default function App() {
           result: event.payload.result,
           status: event.payload.status,
           updatedAt: Date.now(),
-        })
+        }, sid)
         setConnectionLabel(event.payload.status === 'completed' ? `工具 ${event.payload.name} 已完成` : `正在调用工具 ${event.payload.name}`)
         return
       }
 
       if (event.type === 'commands') {
-        setCommands(event.payload)
+        if (isForActiveSession) {
+          setCommands(event.payload)
+        }
         return
       }
 
@@ -208,13 +220,22 @@ export default function App() {
           content: event.payload,
           tone: isError ? 'error' : 'muted',
           label: isError ? '错误输出' : '后台输出',
-        })
+        }, sid)
         setConnectionLabel(isError ? 'Hermes 返回了错误信息' : 'Hermes 后台输出')
         return
       }
 
       if (event.type === 'workspace:snapshot') {
-        setSnapshot(event.payload as DesktopWorkspaceSnapshot)
+        if (isForActiveSession) {
+          setSnapshot(event.payload as DesktopWorkspaceSnapshot)
+        }
+        return
+      }
+
+      if (event.type === 'mods:ready') {
+        // Backend finished enabling MODs and registering their IPC handlers.
+        // Bump the nonce so any already-mounted sidebar panels re-fetch.
+        useModsStore.getState().markModsReady()
         return
       }
 
@@ -225,13 +246,16 @@ export default function App() {
           content: `Hermes 进程已退出${event.payload.code === null ? '' : `，退出码 ${event.payload.code}`}`,
           tone: event.payload.code === 0 ? 'muted' : 'error',
           label: '进程状态',
-        })
+        }, sid)
         setActiveAssistant(null)
         setConnectionLabel('离线')
         return
       }
 
-      console.debug('[Hermes raw event]', event.payload)
+      // Raw/diagnostic events — suppress noise but log in dev
+      if (event.type === 'raw' || (event as Record<string, unknown>).type === 'raw') {
+        return
+      }
     })
   }, [
     addMessage,

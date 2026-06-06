@@ -67,9 +67,14 @@ export function SessionInfo() {
     }
   }
 
+  // Re-list worktrees whenever the workspace directory changes — including when
+  // switching sessions, since each tab can point at a different cwd. The cwd in
+  // the store is updated by switchSession's snapshot after the backend has
+  // already repointed workspaceRoot, so the listing reflects the active session.
   useEffect(() => {
     void refreshWorktrees()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd])
 
   const handleCreateWorktree = async () => {
     if (!window.hermesDesktop) {
