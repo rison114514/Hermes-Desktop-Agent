@@ -65,11 +65,21 @@ class SessionManager {
       // set workspace path if provided
       ;(bridge as any).workspacePath = cwd
     }
-    await bridge.start()
-    const id = bridge.getSessionId() ?? `session-${Date.now()}`
+    // Generate a temporary id — the bridge will emit events once the
+    // real ACP session is established. Return immediately so the UI can
+    // switch to the new tab without blocking on process spawn.
+    const id = `session-${Date.now()}`
     const info: SessionInfo = { id, name, cwd: cwd ?? process.cwd(), title: null, bridge }
     this.sessions.set(id, info)
     if (!this.activeId) this.activeId = id
+
+    // Start the bridge in the background. When the ACP handshake completes
+    // the bridge emits events (including workspace snapshots), so the
+    // renderer tab receives content without any additional wiring.
+    bridge.start().catch((err) => {
+      console.warn('[session] bridge start failed for', id, ':', err instanceof Error ? err.message : err)
+    })
+
     return info
   }
 

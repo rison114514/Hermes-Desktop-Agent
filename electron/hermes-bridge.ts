@@ -1,8 +1,9 @@
-import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { normalizeMaybeText } from './text-normalization.js'
-import { createUtf8ProcessEnv, resolveWslDistro, runWslCommand, windowsPathToWslPath } from './wsl-paths.js'
+import { createUtf8ProcessEnv } from './wsl-paths.js'
+import { getBackendProvider, type BackendProvider, type ProxyConfig } from './backend.js'
 
 export type HermesBridgeEvent =
   | { type: 'status'; payload: { stage: string; detail: string } }
@@ -17,6 +18,7 @@ export type HermesBridgeEvent =
   | { type: 'raw'; payload: unknown }
   | { type: 'workspace:snapshot'; payload: unknown }
   | { type: 'mods:ready' }
+  | { type: 'todo:updated' }
   | { type: 'exit'; payload: { code: number | null } }
 
 export type HermesSessionInfo = {
@@ -97,36 +99,22 @@ export class HermesBridge extends EventEmitter {
   private permissionHandler: HermesPermissionHandler | null = null
   private promptCancelRequested = false
   private cachedCommands: HermesCommandInfo[] = []
-  private proxyConfig: { enabled: boolean; type: string; host: string; port: number } | null = null
+  private proxyConfig: ProxyConfig | null = null
+  private backend: BackendProvider | null = null
 
   getWorkspacePath() {
     return this.workspacePath
   }
 
-  setProxyConfig(config: { enabled: boolean; type: string; host: string; port: number } | null) {
-    this.proxyConfig = config
+  /** Sync workspace path BEFORE starting — avoids unnecessary stop/restart cycle. */
+  initWorkspacePath(workspacePath: string) {
+    if (!this.process) {
+      this.workspacePath = workspacePath
+    }
   }
 
-  private getProxyExportLines(): string[] {
-    const cfg = this.proxyConfig
-    if (!cfg || !cfg.enabled) return []
-
-    const { host, port, type } = cfg
-    if (!host || !port) return []
-
-    const protocol = type === 'socks5' ? 'socks5' : 'http'
-    const proxyUrl = `${protocol}://${host}:${port}`
-
-    return [
-      `export http_proxy="${proxyUrl}"`,
-      `export HTTP_PROXY="${proxyUrl}"`,
-      `export https_proxy="${proxyUrl}"`,
-      `export HTTPS_PROXY="${proxyUrl}"`,
-      `export all_proxy="${proxyUrl}"`,
-      `export ALL_PROXY="${proxyUrl}"`,
-      `export NO_PROXY="localhost,127.0.0.1,.local"`,
-      `export no_proxy="localhost,127.0.0.1,.local"`,
-    ]
+  setProxyConfig(config: ProxyConfig | null) {
+    this.proxyConfig = config
   }
 
   setPermissionHandler(handler: HermesPermissionHandler | null) {
@@ -151,6 +139,20 @@ export class HermesBridge extends EventEmitter {
     this.emitEvent({
       type: 'status',
       payload: { stage: 'workspace', detail: `Workspace switched to ${workspacePath}` },
+    })
+  }
+
+  /** Soft workspace switch — updates path WITHOUT killing the ACP process.
+   *  Use this when the user wants to change workspace but keep the conversation
+   *  context alive.  The next sendMessage call will still use the active ACP
+   *  session; the model has shell access and can navigate to the new directory. */
+  updateWorkspace(workspacePath: string) {
+    if (workspacePath === this.workspacePath) return
+
+    this.workspacePath = workspacePath
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'workspace', detail: `Workspace updated to ${workspacePath} (session preserved)` },
     })
   }
 
@@ -251,7 +253,7 @@ export class HermesBridge extends EventEmitter {
     await this.switchWorkspace(workspacePath)
     await this.ensureBackend()
 
-    const cwd = windowsPathToWslPath(this.workspacePath)
+    const cwd = this.backend!.toBackendPath(this.workspacePath)
     this.clearHistoryReplay()
     this.loadingSessionHistory = true
     this.historyTurns = []
@@ -329,7 +331,7 @@ export class HermesBridge extends EventEmitter {
       return
     }
 
-    const cwd = windowsPathToWslPath(this.workspacePath)
+    const cwd = this.backend!.toBackendPath(this.workspacePath)
     const session = await this.sendRequest('session/new', {
       cwd,
       mcpServers: [],
@@ -352,39 +354,32 @@ export class HermesBridge extends EventEmitter {
       return
     }
 
-    const wslWorkspace = windowsPathToWslPath(this.workspacePath)
-    const distro = await resolveWslDistro()
-    await this.ensureHermesInstalled(distro)
+    if (!this.backend) {
+      this.backend = getBackendProvider()
+    }
 
-    const child = spawn('wsl.exe', [
-      '-d',
-      distro,
-      '--cd',
-      wslWorkspace,
-      '--',
-      'bash',
-      '-lc',
-      [
-        'export LANG=C.UTF-8',
-        'export LC_ALL=C.UTF-8',
-        'export PYTHONUTF8=1',
-        'export PYTHONIOENCODING=utf-8',
-        'export HERMES_TEXT_ENCODING=utf-8',
-        ...this.getProxyExportLines(),
-        'exec hermes acp --accept-hooks',
-      ].join('; '),
-    ], {
-      stdio: 'pipe',
-      windowsHide: true,
-      env: createUtf8ProcessEnv({ ...process.env, HERMES_WSL_DISTRO: distro }),
+    const backendType = this.backend.type
+
+    this.emitEvent({
+      type: 'status',
+      payload: { stage: 'checking-backend', detail: `Checking Hermes (${backendType} backend).` },
     })
+
+    try {
+      await this.backend.ensureHermesInstalled(this.proxyConfig)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`Hermes is not available (${backendType} backend). ${detail}`)
+    }
+
+    const child = await this.backend.spawnAcp(this.workspacePath, this.proxyConfig)
     this.process = child
 
     this.emitEvent({
       type: 'status',
       payload: {
         stage: 'boot',
-        detail: `Starting Hermes ACP in ${distro}.`,
+        detail: `Starting Hermes ACP (${backendType} backend).`,
       },
     })
 
@@ -472,65 +467,6 @@ export class HermesBridge extends EventEmitter {
         detail: model ? `Hermes ACP initialized with ${model}.` : 'Hermes ACP initialized.',
       },
     })
-  }
-
-  private async ensureHermesInstalled(distro: string) {
-    this.emitEvent({
-      type: 'status',
-      payload: { stage: 'checking-backend', detail: `Checking Hermes in ${distro}.` },
-    })
-
-    try {
-      await runWslCommand(['bash', '-lc', 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null 2>&1 && hermes --version >/dev/null 2>&1'], distro)
-      return
-    } catch {
-      this.emitEvent({
-        type: 'status',
-        payload: { stage: 'installing-backend', detail: `Hermes was not found in ${distro}. Installing Hermes now.` },
-      })
-    }
-
-    const proxyExports = this.getProxyExportLines()
-    const installerScript = [
-      'set -e',
-      'export PATH="$HOME/.local/bin:$PATH"',
-      'export PYTHONUTF8=1',
-      'export PYTHONIOENCODING=utf-8',
-      'export LANG=C.UTF-8',
-      'export LC_ALL=C.UTF-8',
-      ...proxyExports,
-      'export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"',
-      'export UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"',
-      'export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"',
-      'install_urls="',
-      'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
-      'https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
-      'https://ghfast.top/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
-      '"',
-      'installed=0',
-      'for url in $install_urls; do',
-      '  echo "Trying Hermes installer: $url"',
-      '  if curl -fsSL "$url" -o /tmp/hermes-install.sh; then',
-      '    bash /tmp/hermes-install.sh',
-      '    rm -f /tmp/hermes-install.sh',
-      '    installed=1',
-      '    break',
-      '  fi',
-      'done',
-      'if [ "$installed" != "1" ]; then',
-      '  echo "Unable to download Hermes installer." >&2',
-      '  exit 1',
-      'fi',
-      'command -v hermes >/dev/null 2>&1',
-      'hermes --version >/dev/null 2>&1',
-    ].join('\n')
-
-    try {
-      await runWslCommand(['bash', '-lc', installerScript], distro)
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`Hermes is not installed in ${distro}, and automatic installation failed. Check WSL network/proxy access, then install Hermes manually and restart Hermes Desktop Agent. ${detail}`)
-    }
   }
 
   // Pass timeoutMs <= 0 (or non-finite) for requests that must wait indefinitely,

@@ -15,7 +15,7 @@ interface SidebarStore {
 }
 
 const STORAGE_KEY = 'hermes-sidebar-order'
-const DEFAULT_ORDER = ['skills', 'model', 'proxy', 'mods', 'mod-panels']
+const DEFAULT_ORDER = ['sessions', 'skills', 'model', 'proxy', 'mods']
 
 function readOrder(): CardOrder {
   try {

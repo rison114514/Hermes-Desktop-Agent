@@ -1,5 +1,5 @@
-import type { CSSProperties } from 'react'
-import { Bot, Minus, Moon, Pin, PinOff, Sun, X } from 'lucide-react'
+import { useState, type CSSProperties } from 'react'
+import { Bot, Minus, Moon, Pin, PinOff, RefreshCw, Sun, X } from 'lucide-react'
 import { useDesktopWindowStore } from '@/store/window'
 import { useThemeStore } from '@/store/theme'
 
@@ -8,6 +8,7 @@ export function TitleBar() {
   const setWindowState = useDesktopWindowStore((state) => state.setState)
   const theme = useThemeStore((state) => state.theme)
   const setTheme = useThemeStore((state) => state.setTheme)
+  const [reloading, setReloading] = useState(false)
 
   const handleToggleAlwaysOnTop = async () => {
     if (!window.hermesDesktop) {
@@ -16,6 +17,18 @@ export function TitleBar() {
 
     const nextState = await window.hermesDesktop.setAlwaysOnTop(!alwaysOnTop)
     setWindowState(nextState)
+  }
+
+  const handleHotReload = async () => {
+    if (!window.hermesDesktop || reloading) return
+    setReloading(true)
+    try {
+      await window.hermesDesktop.hotReload()
+      // The backend reloads the window after rebuilding — no need to update stores.
+    } catch {
+      // Window may reload before the IPC resolves, which throws — ignore.
+      setReloading(false)
+    }
   }
 
   return (
@@ -34,6 +47,16 @@ export function TitleBar() {
       </div>
 
       <div className="flex items-center gap-2 text-slate-400">
+        <button
+          type="button"
+          onClick={() => void handleHotReload()}
+          disabled={reloading}
+          className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 transition enabled:hover:border-emerald-300/40 enabled:hover:text-emerald-100 disabled:cursor-not-allowed disabled:text-slate-600"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+          title="热重载 — 刷新模组与数据"
+        >
+          <RefreshCw className={`h-4 w-4 ${reloading ? 'animate-spin' : ''}`} />
+        </button>
         <button
           type="button"
           onClick={() => void handleToggleAlwaysOnTop()}

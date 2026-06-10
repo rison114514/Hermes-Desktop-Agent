@@ -1,4 +1,4 @@
-import { memo, useMemo, type ReactNode } from 'react'
+import { memo, useMemo, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Bot, Info, TriangleAlert, User2, Wrench, CheckCircle2, ChevronDown } from 'lucide-react'
 import katex from 'katex'
@@ -532,8 +532,13 @@ function ToolCallShelf({ message }: { message: Message }) {
 function MessageBubbleComponent({ message }: { message: Message }) {
   const isAssistant = message.role === 'assistant'
   const isSystem = message.role === 'system'
+  const isError = isSystem && message.tone === 'error'
   const badge = message.label ?? (isAssistant ? 'assistant' : message.role)
   const Icon = isSystem ? (message.tone === 'error' ? TriangleAlert : Info) : isAssistant ? Bot : User2
+
+  // Collapse stderr/system output by default — stack traces and backend noise
+  // shouldn't flood the chat. Both "错误输出" and "后台输出" are collapsed.
+  const [stderrExpanded, setStderrExpanded] = useState(false)
 
   // Parsing + syntax-highlighting markdown is expensive; cache it per content so
   // re-renders triggered by unrelated prop changes (e.g. tool updates) don't
@@ -581,6 +586,26 @@ function MessageBubbleComponent({ message }: { message: Message }) {
         </div>
         {message.kind === 'tool' ? (
           <ToolCard message={message} />
+        ) : isSystem ? (
+          <div className="space-y-2">
+            <div
+              className={cn(
+                'overflow-y-hidden transition-all',
+                stderrExpanded ? 'max-h-[32rem] overflow-y-auto' : 'max-h-24',
+              )}
+            >
+              {renderedContent}
+            </div>
+            <button
+              type="button"
+              onClick={() => setStderrExpanded((v) => !v)}
+              className="flex items-center gap-1 text-[11px] text-slate-400/60 transition hover:text-slate-300"
+            >
+              <ChevronDown className={cn('h-3 w-3 transition', stderrExpanded && 'rotate-180')} />
+              {stderrExpanded ? '折叠' : isError ? '展开错误输出' : '展开后台输出'}
+            </button>
+            <ToolCallShelf message={message} />
+          </div>
         ) : (
           <div className="space-y-3">
             {renderedContent}

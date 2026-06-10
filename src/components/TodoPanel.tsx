@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   PanelRight, ChevronLeft, CheckCircle2, Circle, Plus, Trash2, ListTodo,
-  Clock, AlertTriangle, Calendar, Edit3, ArrowRight, X, Sparkles, Pin
+  Clock, AlertTriangle, Calendar, Edit3, ArrowRight, RefreshCw, X, Sparkles, Pin
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useModsStore } from '@/store/mods'
@@ -61,6 +61,15 @@ export function TodoPanel() {
   // were registered.
   const modsReadyNonce = useModsStore((s) => s.modsReadyNonce)
   useEffect(() => { refreshList() }, [modsReadyNonce])
+
+  // Re-fetch when the agent modifies tasks (via the todo-commands.jsonl bridge).
+  // The backend sends a 'todo:updated' event after applying queued commands.
+  useEffect(() => {
+    if (!window.hermesDesktop?.onHermesEvent) return
+    return window.hermesDesktop.onHermesEvent((event) => {
+      if (event.type === 'todo:updated') refreshList()
+    })
+  }, [])
 
   const callMod = async (method: string, args?: Record<string, unknown>) => {
     if (!window.hermesDesktop?.callModIpc) return null
@@ -284,6 +293,7 @@ export function TodoPanel() {
                   onToggle={handleToggle}
                   onOpenDetail={openDetail}
                   onClearDone={handleClearDone}
+                  onRefresh={refreshList}
                   onClose={closePanel}
                   onPopOut={popOutToWidget}
                 />
@@ -312,6 +322,7 @@ interface ListViewProps {
   onToggle: (index: number) => void
   onOpenDetail: (t: TodoItem) => void
   onClearDone: () => void
+  onRefresh: () => void
   onClose: () => void
   onPopOut: () => void
 }
@@ -319,7 +330,7 @@ interface ListViewProps {
 function ListView({
   summary, progress, hasTasks, doneCount, sortedTasks, nowMs, loading,
   newTitle, setNewTitle, showAddForm, setShowAddForm,
-  onAdd, onToggle, onOpenDetail, onClearDone, onClose, onPopOut,
+  onAdd, onToggle, onOpenDetail, onClearDone, onRefresh, onClose, onPopOut,
 }: ListViewProps) {
   return (
     <>
@@ -335,6 +346,14 @@ function ListView({
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="grid h-7 w-7 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition hover:border-emerald-300/40 hover:text-emerald-200"
+            title="刷新任务列表"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
           <button
             type="button"
             onClick={onPopOut}

@@ -26,14 +26,14 @@ function readStoredProxy(): ProxyConfig {
       return {
         enabled: Boolean(parsed.enabled),
         type: parsed.type === 'socks5' ? 'socks5' : 'http',
-        host: typeof parsed.host === 'string' && parsed.host.trim() ? parsed.host.trim() : 'host.docker.internal',
+        host: typeof parsed.host === 'string' && parsed.host.trim() ? parsed.host.trim() : '127.0.0.1',
         port: typeof parsed.port === 'number' && parsed.port > 0 && parsed.port < 65536 ? parsed.port : 7890,
       }
     }
   } catch {
     // localStorage unavailable or corrupt
   }
-  return { enabled: false, type: 'http', host: 'host.docker.internal', port: 7890 }
+  return { enabled: false, type: 'http', host: '127.0.0.1', port: 7890 }
 }
 
 function syncProxyToMain(config: ProxyConfig) {

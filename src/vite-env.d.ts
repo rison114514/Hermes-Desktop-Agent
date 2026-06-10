@@ -51,6 +51,8 @@ declare global {
       }>>
       loadHermesSession: (sessionId: string, cwd: string) => Promise<DesktopWorkspaceSnapshot>
       newHermesSession: () => Promise<DesktopWorkspaceSnapshot>
+      deleteHermesSession: (sessionId: string) => Promise<{ ok: boolean; error?: string }>
+      renameHermesSession: (sessionId: string, newTitle: string) => Promise<{ ok: boolean; error?: string }>
       createHermesWorktree: (options?: { name?: string; directory?: string }) => Promise<{
         worktree: {
           path: string
@@ -65,7 +67,15 @@ declare global {
       selectWorktreeDirectory: () => Promise<{ canceled: boolean; path?: string }>
       selectWorkspaceDirectory: () => Promise<{ canceled: boolean; path?: string }>
       switchWorkspaceRoot: (workspacePath: string) => Promise<DesktopWorkspaceSnapshot>
+      softSwitchWorkspace: (workspacePath: string) => Promise<DesktopWorkspaceSnapshot>
       getHermesConfig: () => Promise<{ provider: string; model: string; source: string }>
+      setModelConfig: (config: { provider?: string; model?: string }) => Promise<{
+        ok: boolean
+        error?: string
+        config?: { provider: string; model: string; source: string }
+      }>
+      getApiKeys: () => Promise<{ keys: Record<string, string | null> }>
+      setApiKey: (config: { provider: string; apiKey: string }) => Promise<{ ok: boolean; error?: string }>
       getHermesSkills: () => Promise<Array<{
         id: string
         name: string
@@ -122,6 +132,7 @@ declare global {
       setProxyConfig: (config: { enabled: boolean; type: string; host: string; port: number }) => Promise<{ ok: boolean }>
       detectProxyHost: () => Promise<{ host: string }>
       restartBackend: () => Promise<{ ok: boolean }>
+      hotReload: () => Promise<{ mods: Array<{ name: string; path: string; manifest: Record<string, unknown>; enabled: boolean; error?: string }>; todoApplied: number; rebuilt: boolean }>
       scanMods: () => Promise<Array<{
         name: string
         path: string

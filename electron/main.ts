@@ -1,13 +1,16 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, screen } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
+import { exec } from 'node:child_process'
 import { access, readFile, rename, rm, stat } from 'node:fs/promises'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOption, type HermesPermissionOutcome, type HermesPermissionRequest } from './hermes-bridge.js'
+import { getBackendProvider, type BackendProvider } from './backend.js'
 import { sessionManager, type SessionInfo } from './session-manager.js'
 import { loadMod, reloadMod, scanModsDirectory } from './mod-loader.js'
-import { syncModBridge, drainTodoCommands, type ModBridgeData } from './mod-bridge.js'
+import { syncModBridge, drainTodoCommands, drainDisciplineCommands, type ModBridgeData } from './mod-bridge.js'
+import { createHermesWorktree, listHermesWorktrees, normalizeWorktreeName, type HermesWorktreeInfo } from './worktree.js'
 import {
   canPreviewFile,
   FILE_PREVIEW_MAX_CHARS,
@@ -61,15 +64,6 @@ type HermesSkillSnapshot = {
   category: string
   description: string
   enabled: boolean
-}
-
-type HermesWorktreeInfo = {
-  path: string
-  branch: string
-  head: string
-  detached: boolean
-  current: boolean
-  name: string
 }
 
 type CreateWorktreeOptions = {
@@ -275,6 +269,15 @@ if (!app.requestSingleInstanceLock()) {
 
 app.whenReady().then(async () => {
   await restoreWorkspaceRoot()
+  // Sync bridge workspace path before starting — prevents an unnecessary
+  // stop/restart cycle if the persisted workspace differs from process.cwd().
+  hermesBridge.initWorkspacePath(workspaceRoot)
+
+  // Register the default tab BEFORE creating the window so the TabBar
+  // picks it up on its very first poll. The bridge starts in background
+  // and the tab updates once the ACP handshake completes.
+  sessionManager.registerSession('default', '主会话', workspaceRoot, hermesBridge)
+
   void createWindow()
   createTray()
   registerShortcuts()
@@ -296,9 +299,10 @@ app.whenReady().then(async () => {
       console.warn('[mods] auto-enable failed', error instanceof Error ? error.message : error)
     })
 
+  // Start the bridge in background. Once the ACP handshake completes,
+  // resume the last session if one was persisted.
   void hermesBridge.start().then(async () => {
-    // Register default session
-    sessionManager.registerSession('default', '主会话', workspaceRoot, hermesBridge)
+    sessionManager.updateSession('default', { cwd: workspaceRoot, title: currentSessionTitle })
 
     if (lastSessionId && hermesBridge.getSessionId() !== lastSessionId) {
       try {
@@ -338,6 +342,8 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   isQuitting = true
   globalShortcut.unregisterAll()
+  if (_todoPollTimer) clearInterval(_todoPollTimer)
+  if (_discPollTimer) clearInterval(_discPollTimer)
   // Call onDisable for all enabled MODs so they can save state
   for (const [, instance] of modInstances) {
     if (instance?.exports?.onDisable) {
@@ -387,8 +393,9 @@ function composeModSystemPrompt(): string {
 }
 
 // Apply the agent's queued todo commands back into the hermes-todo mod.
-async function applyTodoCommands(): Promise<void> {
-  if (!modInstances.has('hermes-todo')) return
+// Returns the number of commands applied (0 = no changes).
+async function applyTodoCommands(): Promise<number> {
+  if (!modInstances.has('hermes-todo')) return 0
   const commands = await drainTodoCommands()
   for (const cmd of commands) {
     const op = String(cmd.op || '')
@@ -397,6 +404,53 @@ async function applyTodoCommands(): Promise<void> {
     else if (op === 'remove') callModHandler('hermes-todo', 'remove', { index: cmd.index })
     else if (op === 'clear-done') callModHandler('hermes-todo', 'clear-done')
   }
+  return commands.length
+}
+
+// Apply the agent's queued discipline commands back into the hermes-discipline mod.
+async function applyDisciplineCommands(): Promise<number> {
+  if (!modInstances.has('hermes-discipline')) return 0
+  const commands = await drainDisciplineCommands()
+  for (const cmd of commands) {
+    const op = String(cmd.op || '')
+    if (op === 'update-schedule') callModHandler('hermes-discipline', 'update-schedule', cmd)
+    else if (op === 'update-goal') callModHandler('hermes-discipline', 'update-goal', cmd)
+    else if (op === 'save-summary') callModHandler('hermes-discipline', 'save-summary', cmd)
+  }
+  return commands.length
+}
+
+// Poll the todo-commands.jsonl file periodically so the agent's task edits are
+// applied promptly even when the user hasn't sent a follow-up message yet.
+let _discPollTimer: ReturnType<typeof setInterval> | null = null
+let _todoPollTimer: ReturnType<typeof setInterval> | null = null
+
+function startDisciplinePolling() {
+  if (_discPollTimer) return
+  _discPollTimer = setInterval(async () => {
+    try {
+      const count = await applyDisciplineCommands()
+      if (count > 0) {
+        await syncModBridgeNow()
+        mainWindow?.webContents.send('hermes:event', { type: 'discipline:updated' })
+      }
+    } catch { /* silent */ }
+  }, 2000)
+}
+
+function startTodoPolling() {
+  if (_todoPollTimer) return
+  _todoPollTimer = setInterval(async () => {
+    try {
+      const count = await applyTodoCommands()
+      if (count > 0) {
+        await syncModBridgeNow()
+        mainWindow?.webContents.send('hermes:event', { type: 'todo:updated' })
+      }
+    } catch {
+      // Silently ignore poll errors — the file may not exist yet
+    }
+  }, 2000)
 }
 
 // Push the current todo list + SSH configs (incl. secrets) and skill docs into
@@ -404,10 +458,14 @@ async function applyTodoCommands(): Promise<void> {
 async function syncModBridgeNow(): Promise<void> {
   const hasTodo = modInstances.has('hermes-todo')
   const hasSsh = modInstances.has('hermes-ssh')
-  if (!hasTodo && !hasSsh) return
+  const hasDiscipline = modInstances.has('hermes-discipline')
+  if (!hasTodo && !hasSsh && !hasDiscipline) return
+  const discData = hasDiscipline ? (callModHandler('hermes-discipline', 'list-plans') as { plans?: unknown[]; templates?: unknown[] } | null) : null
   const data: ModBridgeData = {
     todos: hasTodo ? ((callModHandler('hermes-todo', 'list') as unknown[]) ?? []) : [],
     sshServers: hasSsh ? ((callModHandler('hermes-ssh', 'get-configs') as unknown[]) ?? []) : [],
+    disciplinePlans: discData?.plans ?? [],
+    disciplineTemplates: discData?.templates ?? [],
   }
   try { await syncModBridge(data) } catch (err) {
     console.warn('[mod-bridge] sync failed:', err instanceof Error ? err.message : err)
@@ -423,10 +481,19 @@ ipcMain.handle('hermes:send-message', async (_event, message: string, sessionId?
     }
   }
 
-  // Mod → Agent bridge: apply any todo edits the agent queued last turn, then
-  // refresh the WSL data files so this turn reads current todos/SSH info.
-  await applyTodoCommands()
+  // Mod → Agent bridge: apply any edits the agent queued last turn, then
+  // refresh the data files so this turn reads current mod data.
+  const todoApplied = await applyTodoCommands()
+  const discApplied = await applyDisciplineCommands()
   await syncModBridgeNow()
+
+  // Notify the renderer so UI panels can re-fetch updated lists.
+  if (todoApplied > 0) {
+    mainWindow?.webContents.send('hermes:event', { type: 'todo:updated' })
+  }
+  if (discApplied > 0) {
+    mainWindow?.webContents.send('hermes:event', { type: 'discipline:updated' })
+  }
 
   // Inject the composed mod guidance once per session, so the agent is told the
   // bridge files / hermes-mods skills exist even if it hasn't browsed skills.
@@ -473,7 +540,15 @@ ipcMain.handle('hermes:permission-response', async (_event, requestId: string, o
 })
 
 ipcMain.handle('hermes:list-sessions', async () => {
-  return getActiveBridge().listSessions()
+  try {
+    return await getActiveBridge().listSessions()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('backend stopped') || message.includes('has not started')) {
+      return [] // backend not ready yet — return empty list
+    }
+    throw error
+  }
 })
 
 ipcMain.handle('hermes:load-session', async (_event, sessionId: string, cwd: string) => {
@@ -499,25 +574,84 @@ ipcMain.handle('hermes:new-session', async () => {
   return createWorkspaceSnapshot()
 })
 
+ipcMain.handle('hermes:delete-session', async (_event, sessionId: string) => {
+  const backend = getBackendProvider()
+  try {
+    await backend.execCommand(['hermes', 'sessions', 'delete', sessionId])
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:rename-session', async (_event, sessionId: string, newTitle: string) => {
+  const backend = getBackendProvider()
+  try {
+    await backend.execCommand(['hermes', 'sessions', 'rename', sessionId, newTitle])
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
 ipcMain.handle('proxy:set-config', async (_event, config) => {
   getActiveBridge().setProxyConfig(config)
   return { ok: true }
 })
 
 ipcMain.handle('proxy:detect-host', async () => {
-  try {
-    const resolv = await runWslCommand(['bash', '-lc', "grep nameserver /etc/resolv.conf | head -1 | sed 's/.* //'"])
-    const ip = resolv.trim()
-    if (ip) return { host: ip }
-  } catch { /* fall through */ }
+  const backend = getBackendProvider()
 
-  try {
-    const route = await runWslCommand(['bash', '-lc', "ip route show default | awk '{print $3}'"])
-    const ip = route.trim()
-    if (ip) return { host: ip }
-  } catch { /* fall through */ }
+  // 1. Check environment variables first (works for both backends)
+  const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy
+  const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy
+  const proxyUrl = httpProxy || httpsProxy
+  if (proxyUrl) {
+    try {
+      const u = new URL(proxyUrl)
+      if (u.hostname) return { host: u.hostname }
+    } catch { /* not a valid URL, continue */ }
+  }
 
-  return { host: 'host.docker.internal' }
+  // 2. For native Windows, try system proxy settings
+  if (backend.type === 'native') {
+    try {
+      const { execFileSync } = await import('node:child_process')
+      const output = execFileSync('netsh', ['winhttp', 'show', 'proxy'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+      const match = output.match(/代理服务器地址\s*:\s*([^\s]+)/) || output.match(/Proxy Server\s*:\s*([^\s]+)/)
+      if (match) {
+        const addr = match[1]
+        // netsh returns format like "127.0.0.1:7890" or "http=127.0.0.1:7890;https=..."
+        const hostPart = addr.includes('=') ? addr.split(';')[0].split('=')[1] || addr.split(';')[0] : addr
+        try {
+          // strip protocol prefix if present
+          const clean = hostPart.replace(/^https?:\/\//, '')
+          const host = clean.split(':')[0]
+          if (host && host !== '=') return { host }
+        } catch { /* fall through */ }
+      }
+    } catch { /* netsh not available or system proxy not set */ }
+  }
+
+  // 3. For WSL backend, detect via WSL DNS resolver
+  if (backend.type === 'wsl') {
+    try {
+      const resolv = await runWslCommand(['bash', '-lc', "grep nameserver /etc/resolv.conf | head -1 | sed 's/.* //'"])
+      const ip = resolv.trim()
+      if (ip) return { host: ip }
+    } catch { /* fall through */ }
+
+    try {
+      const route = await runWslCommand(['bash', '-lc', "ip route show default | awk '{print $3}'"])
+      const ip = route.trim()
+      if (ip) return { host: ip }
+    } catch { /* fall through */ }
+  }
+
+  return { host: '127.0.0.1' }
 })
 
 ipcMain.handle('hermes:restart-backend', async () => {
@@ -576,6 +710,53 @@ ipcMain.handle('session:list', async () => {
   return sessionManager.listSessions()
 })
 
+// Hot-reload: rebuild the Electron main process + rescan mods + sync bridge +
+// reload the renderer window.  Similar to what start-hermes-desktop does, but
+// without killing the entire process.
+ipcMain.handle('hermes:hot-reload', async () => {
+  const projectDir = app.getAppPath()
+
+  // 1. Rebuild Electron main process (tsc)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      exec('npx tsc -p tsconfig.electron.json', { cwd: projectDir }, (err, stdout, stderr) => {
+        if (stdout) console.log('[hot-reload] tsc:', stdout.trim())
+        if (stderr) console.warn('[hot-reload] tsc stderr:', stderr.trim())
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+  } catch (err) {
+    console.warn('[hot-reload] tsc rebuild failed:', err instanceof Error ? err.message : err)
+    // Continue anyway — the window reload will still pick up current build
+  }
+
+  // 2. Re-scan mods directory
+  const mods = await scanModsDirectory()
+  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  let enabledList: string[] = []
+  try { enabledList = JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { /* ok */ }
+
+  const scanned = mods.map((m) => ({
+    name: m.name,
+    path: m.path,
+    manifest: m.manifest,
+    enabled: enabledList.includes(m.name),
+    error: m.error,
+  }))
+
+  // 3. Apply pending todo commands + sync bridge
+  const todoApplied = await applyTodoCommands()
+  await syncModBridgeNow()
+
+  // 4. Reload the renderer window (picks up rebuilt frontend + mod changes)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.reload()
+  }
+
+  return { mods: scanned, todoApplied, rebuilt: true }
+})
+
 // --- MOD handlers ---
 
 ipcMain.handle('mods:scan', async () => {
@@ -619,7 +800,10 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
       mod.exports.onEnable(ctx)
     }
     // Refresh the WSL bridge so a newly enabled todo/SSH mod is visible to agent.
-    if (modName === 'hermes-todo' || modName === 'hermes-ssh') void syncModBridgeNow()
+    if (modName === 'hermes-todo' || modName === 'hermes-ssh' || modName === 'hermes-discipline') void syncModBridgeNow()
+    // Start polling for agent-written todo commands if the todo mod was just enabled.
+    if (modName === 'hermes-todo') startTodoPolling()
+    if (modName === 'hermes-discipline') startDisciplinePolling()
     // Persist enabled MOD names
     try {
       const list: string[] = (() => { try { return JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { return [] } })()
@@ -687,13 +871,12 @@ ipcMain.handle('mods:persona-switch', async (_event, personaId: string) => {
 })
 
 ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
-  const worktree = await createHermesWorktree(workspaceRoot, options)
+  const worktree = await createHermesWorktree(workspaceRoot, workspaceRoot, options)
   workspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)
   const bridge = getActiveBridge()
-  await bridge.startNewSession(workspaceRoot)
-  currentSessionTitle = null
-  bridgeInjectedSessions.clear()
-  sessionManager.updateActive({ cwd: workspaceRoot, title: null })
+  // Soft switch — preserve the active session/conversation
+  bridge.updateWorkspace(workspaceRoot)
+  sessionManager.updateActive({ cwd: workspaceRoot })
   queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return {
     worktree,
@@ -702,7 +885,7 @@ ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorkt
 })
 
 ipcMain.handle('workspace:list-worktrees', async () => {
-  return listHermesWorktrees(workspaceRoot)
+  return listHermesWorktrees(workspaceRoot, workspaceRoot)
 })
 
 ipcMain.handle('workspace:switch-worktree', async (_event, worktreePath: string) => {
@@ -734,33 +917,24 @@ ipcMain.handle('workspace:switch-root', async (_event, hostPath: string) => {
   return createWorkspaceSnapshot()
 })
 
+// Soft workspace switch — preserves the active ACP session and conversation
+// context while only updating the workspace directory and file tree.
+ipcMain.handle('workspace:soft-switch', async (_event, hostPath: string) => {
+  await assertWorkspaceExists(hostPath)
+  workspaceRoot = hostPath
+  const bridge = getActiveBridge()
+  bridge.updateWorkspace(workspaceRoot)
+  sessionManager.updateActive({ cwd: workspaceRoot })
+  queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
+  return createWorkspaceSnapshot()
+})
+
 ipcMain.handle('workspace:select-worktree-directory', async () => {
   return selectDirectory('Select worktree parent directory', workspaceRoot)
 })
 
 ipcMain.handle('workspace:get-snapshot', async () => {
-  const cwd = workspaceRoot
-  const windows = await getWindowsInteropSnapshot(cwd)
-
-  return {
-    cwd,
-    session: getActiveBridge().getSessionId() ?? 'Local desktop session',
-    files: await readWorkspaceDirectory(cwd),
-    tasks: [
-      { id: 'task-layout', title: '完成三栏布局骨架', done: true },
-      { id: 'task-bridge', title: '接通 WSL Hermes ACP 桥接', done: true },
-      { id: 'task-workspace', title: '接入真实工作区文件树', done: true },
-      { id: 'task-preview', title: '支持文件内容预览', done: true },
-      { id: 'task-tools', title: '支持工具调用卡片', done: true },
-      { id: 'task-windows', title: '启用 Windows 原生互操作', done: windows.available },
-      { id: 'task-acp', title: '通过 wsl.exe 启动 Hermes ACP 后端', done: true },
-      { id: 'task-clipboard', title: '打通 Windows 剪贴板能力', done: true },
-    ],
-    windows: {
-      ...windows,
-      clipboardPreview: '',
-    },
-  }
+  return createWorkspaceSnapshot()
 })
 
 ipcMain.handle('workspace:read-directory', async (_event, directoryPath: string) => {
@@ -884,6 +1058,64 @@ ipcMain.handle('workspace:rename-item', async (_event, itemPath: string, nextNam
 
 ipcMain.handle('hermes:get-config', async () => {
   return readHermesConfigSnapshot()
+})
+
+ipcMain.handle('hermes:set-model-config', async (_event, config: { provider?: string; model?: string }) => {
+  const backend = getBackendProvider()
+  try {
+    if (config.provider) {
+      await backend.execCommand(['hermes', 'config', 'set', 'model.provider', config.provider])
+    }
+    if (config.model) {
+      await backend.execCommand(['hermes', 'config', 'set', 'model.default', config.model])
+    }
+    return { ok: true, config: await readHermesConfigSnapshot() }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:get-api-keys', async () => {
+  const backend = getBackendProvider()
+  const configPath = path.join(backend.hermesHome, 'config.yaml')
+  try {
+    const raw = await readFile(configPath, 'utf8')
+    const content = raw.replace(/\r\n/g, '\n')
+    // Find the providers block under model:
+    const providersBlock = content.match(/(^|\n)\s{2}providers:\n([\s\S]*?)(\n\S\s{0,1}\w|$)/)
+    const block = providersBlock?.[2] ?? ''
+
+    const masked: Record<string, string | null> = {}
+    for (const providerId of KNOWN_PROVIDER_IDS) {
+      const regex = new RegExp(`^\\s{4}${providerId}:\\n((?:\\s{6}[\\w-]+:.*\\n?)*)`, 'm')
+      const m = block.match(regex)
+      if (m) {
+        const keyMatch = m[1].match(/^\s{6}api_key:\s*(.+)$/m)
+        masked[providerId] = maskApiKey(keyMatch?.[1]?.trim() || null)
+      } else {
+        masked[providerId] = null
+      }
+    }
+    return { keys: masked }
+  } catch {
+    const empty: Record<string, string | null> = {}
+    for (const id of KNOWN_PROVIDER_IDS) empty[id] = null
+    return { keys: empty }
+  }
+})
+
+ipcMain.handle('hermes:set-api-key', async (_event, config: { provider: string; apiKey: string }) => {
+  const backend = getBackendProvider()
+  try {
+    await backend.execCommand([
+      'hermes', 'config', 'set',
+      `model.providers.${config.provider}.api_key`,
+      config.apiKey,
+    ])
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
 })
 
 function createModContext(modName: string, modDir?: string) {
@@ -1280,6 +1512,25 @@ async function createWorkspaceSnapshot() {
 }
 
 function workspaceHostPathFromHermesCwd(cwd: string) {
+  const backend = getBackendProvider()
+
+  // Native backend: paths are already Windows paths, no conversion needed.
+  if (backend.type === 'native') {
+    return cwd
+  }
+
+  // Already a Windows drive-letter path — pass through unchanged.
+  // This handles sessions that were saved with a Windows-style cwd,
+  // preventing corruption by wslPathToUncPath below.
+  if (/^[A-Za-z]:[\\/]/.test(cwd)) {
+    return cwd
+  }
+
+  // UNC path from WSL — pass through as-is.
+  if (cwd.startsWith('\\\\wsl')) {
+    return cwd
+  }
+
   const windowsPath = wslPathToWindowsPath(cwd)
   if (windowsPath) {
     return windowsPath
@@ -1325,6 +1576,10 @@ async function autoEnableMods() {
   // Install the bridge skill docs + initial data so the agent discovers the
   // hermes-mods skills at its very first session/new, not only after a prompt.
   await syncModBridgeNow()
+
+  // Begin polling for agent-written todo commands so edits take effect
+  // promptly, even before the user sends the next message.
+  startTodoPolling()
 }
 
 async function lookupSessionTitle(sessionId: string): Promise<string | null> {
@@ -1337,194 +1592,6 @@ async function lookupSessionTitle(sessionId: string): Promise<string | null> {
   }
 }
 
-async function createHermesWorktree(hostPath: string, options: CreateWorktreeOptions = {}) {
-  const wslRoot = windowsPathToWslPath(hostPath)
-  const root = await runWslCommand(['git', '-C', wslRoot, 'rev-parse', '--show-toplevel'])
-  const short = await runWslCommand(['git', '-C', root, 'rev-parse', '--short', 'HEAD'])
-  const stamp = await runWslCommand(['date', '+%Y%m%d-%H%M%S'])
-  const baseName = normalizeWorktreeName(options.name) ?? `hermes-${stamp}-${short}`
-  const { name, branch, worktreePath } = await resolveAvailableWorktreeTarget(root, baseName, options.directory)
-
-  await runWslCommand(['mkdir', '-p', path.posix.dirname(worktreePath)])
-  await runWslCommand(['git', '-C', root, 'worktree', 'add', worktreePath, '-b', branch, 'HEAD'])
-  await finalizeHermesWorktree(root, worktreePath)
-
-  return {
-    path: worktreePath,
-    branch,
-    name,
-    root,
-  }
-}
-
-async function resolveAvailableWorktreeTarget(root: string, baseName: string, directory?: string) {
-  for (let index = 1; index <= 100; index += 1) {
-    const name = index === 1 ? baseName : `${baseName}-${index}`
-    const branch = `hermes/${name}`
-    const worktreePath = resolveWorktreePath(root, name, directory)
-    const [branchExists, pathExists] = await Promise.all([
-      gitBranchExists(root, branch),
-      wslPathExists(worktreePath),
-    ])
-
-    if (!branchExists && !pathExists) {
-      return { name, branch, worktreePath }
-    }
-  }
-
-  throw new Error(`Could not find an available worktree name for ${baseName}.`)
-}
-
-function normalizeWorktreeName(value?: string) {
-  const raw = value?.trim()
-  if (!raw) {
-    return null
-  }
-
-  const normalized = raw
-    .replace(/[\\/\s]+/g, '-')
-    .replace(/[^A-Za-z0-9._-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[.-]+|[.-]+$/g, '')
-
-  if (!normalized) {
-    throw new Error('Worktree name must contain letters, numbers, dots, underscores, or hyphens.')
-  }
-
-  return normalized
-}
-
-function resolveWorktreePath(root: string, name: string, directory?: string) {
-  const raw = directory?.trim()
-  if (!raw) {
-    return `${root}/.worktrees/${name}`
-  }
-
-  let resolved = ''
-  if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\wsl')) {
-    resolved = windowsPathToWslPath(raw)
-  } else if (raw.startsWith('/')) {
-    resolved = raw
-  } else {
-    resolved = `${root}/${raw}`
-  }
-
-  const parent = path.posix.normalize(resolved.replace(/\\/g, '/'))
-  return path.posix.join(parent, name)
-}
-
-async function gitBranchExists(root: string, branch: string) {
-  try {
-    await runWslCommand(['git', '-C', root, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`])
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function wslPathExists(wslPath: string) {
-  try {
-    await runWslCommand(['bash', '-lc', 'test -e "$1"', 'hermes-path-exists', wslPath])
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function finalizeHermesWorktree(root: string, worktreePath: string) {
-  const script = [
-    'set -euo pipefail',
-    'root="$1"',
-    'worktree_path="$2"',
-    'gitignore="$root/.gitignore"',
-    'touch "$gitignore"',
-    'grep -qxF ".worktrees/" "$gitignore" || printf "\\n.worktrees/\\n" >> "$gitignore"',
-    'if [ -f "$root/.worktreeinclude" ]; then',
-    '  while IFS= read -r include || [ -n "$include" ]; do',
-    '    include="${include%%#*}"',
-    '    include="${include#"${include%%[![:space:]]*}"}"',
-    '    include="${include%"${include##*[![:space:]]}"}"',
-    '    [ -z "$include" ] && continue',
-    '    [ -e "$root/$include" ] || continue',
-    '    mkdir -p "$worktree_path/$(dirname "$include")"',
-    '    cp -a "$root/$include" "$worktree_path/$include"',
-    '  done < "$root/.worktreeinclude"',
-    'fi',
-  ].join('\n')
-
-  await runWslCommand(['bash', '-lc', script, 'hermes-worktree-finalize', root, worktreePath])
-}
-
-async function listHermesWorktrees(hostPath: string): Promise<HermesWorktreeInfo[]> {
-  const wslRoot = windowsPathToWslPath(hostPath)
-  let output = ''
-
-  try {
-    output = await runWslCommand([
-      'git',
-      '-C',
-      wslRoot,
-      'worktree',
-      'list',
-      '--porcelain',
-    ])
-  } catch (error) {
-    if (isNotGitRepositoryError(error)) {
-      return []
-    }
-
-    throw error
-  }
-
-  const currentWslPath = windowsPathToWslPath(workspaceRoot)
-  const worktrees: HermesWorktreeInfo[] = []
-  let current: Partial<HermesWorktreeInfo> | null = null
-
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line) {
-      if (current?.path) {
-        worktrees.push(normalizeWorktreeInfo(current, currentWslPath))
-      }
-      current = null
-      continue
-    }
-
-    const [key, ...valueParts] = line.split(' ')
-    const value = valueParts.join(' ')
-
-    if (key === 'worktree') {
-      if (current?.path) {
-        worktrees.push(normalizeWorktreeInfo(current, currentWslPath))
-      }
-      current = { path: value }
-      continue
-    }
-
-    if (!current) {
-      continue
-    }
-
-    if (key === 'HEAD') {
-      current.head = value
-    } else if (key === 'branch') {
-      current.branch = value.replace(/^refs\/heads\//, '')
-    } else if (key === 'detached') {
-      current.detached = true
-    }
-  }
-
-  if (current?.path) {
-    worktrees.push(normalizeWorktreeInfo(current, currentWslPath))
-  }
-
-  return worktrees
-}
-
-function isNotGitRepositoryError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error)
-  return message.includes('not a git repository')
-}
 
 function resolveWorkspaceItemPath(itemPath: string) {
   const normalized = path.normalize(itemPath || '')
@@ -1553,35 +1620,40 @@ function normalizeRenameTarget(nextName: string) {
   return safeName
 }
 
-function normalizeWorktreeInfo(info: Partial<HermesWorktreeInfo>, currentWslPath: string): HermesWorktreeInfo {
-  const worktreePath = info.path ?? ''
-  return {
-    path: worktreePath,
-    branch: info.detached ? 'detached' : info.branch ?? '',
-    head: info.head ?? '',
-    detached: Boolean(info.detached),
-    current: normalizeWslPath(worktreePath) === normalizeWslPath(currentWslPath),
-    name: path.posix.basename(worktreePath),
-  }
+
+
+/**
+ * Read a scalar value from the model: block in hermes config.yaml.
+ * Looks for "  key: value" lines inside the "model:" section.
+ */
+function parseModelYamlKey(content: string, key: string): string {
+  // Find the model: block
+  const modelBlock = content.match(/(^|\n)model:\n([\s\S]*?)(\n\S|$)/)
+  const block = modelBlock?.[2] ?? ''
+  const regex = new RegExp(`^\\s{2}${key}:\\s*(.+)$`, 'm')
+  return block.match(regex)?.[1]?.trim() ?? ''
 }
 
-function normalizeWslPath(value: string) {
-  return value.replace(/\/+$/, '')
+function maskApiKey(key: string | null): string | null {
+  if (!key) return null
+  if (key.length <= 8) return key.slice(0, 1) + '···' + key.slice(-1)
+  return key.slice(0, 4) + '···' + key.slice(-4)
 }
+
+const KNOWN_PROVIDER_IDS = [
+  'anthropic', 'openai', 'deepseek', 'openrouter',
+  'google', 'groq', 'xai', 'nous', 'custom',
+]
 
 async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
-  const configPath = '~/.hermes/config.yaml'
-
+  const backend = getBackendProvider()
+  const configPath = path.join(backend.hermesHome, 'config.yaml')
   try {
-    const content = await runWslCommand(['bash', '-lc', 'cat ~/.hermes/config.yaml'])
-    const modelBlock = content.match(/(^|\n)model:\n([\s\S]*?)(\n[A-Za-z_][\w-]*:|\n?$)/)
-    const block = modelBlock?.[2] ?? ''
-    const provider = block.match(/^\s{2}provider:\s*(.+)$/m)?.[1]?.trim() ?? 'unknown'
-    const model = block.match(/^\s{2}default:\s*(.+)$/m)?.[1]?.trim() ?? 'unknown'
-
+    const raw = await readFile(configPath, 'utf8')
+    const content = raw.replace(/\r\n/g, '\n')
     return {
-      provider,
-      model,
+      provider: parseModelYamlKey(content, 'provider') || 'unknown',
+      model: parseModelYamlKey(content, 'default') || 'unknown',
       source: configPath,
     }
   } catch {

@@ -7,6 +7,7 @@ import { useChatStore } from '@/store/chat'
 import { useSessionStore } from '@/store/sessions'
 import { useDesktopWindowStore } from '@/store/window'
 import { useSkillsStore } from '@/store/skills'
+import { useModelStore } from '@/store/model'
 import { useModsStore } from '@/store/mods'
 import { useWorkspaceStore } from '@/store/workspace'
 import { useThemeStore } from '@/store/theme'
@@ -41,7 +42,7 @@ export default function App() {
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
   const setPreview = useWorkspaceStore((state) => state.setPreview)
   const setPreviewLoading = useWorkspaceStore((state) => state.setPreviewLoading)
-  const setHermesConfig = useSkillsStore((state) => state.setHermesConfig)
+  const setModelConfig = useModelStore((state) => state.setConfig)
   const setSkills = useSkillsStore((state) => state.setSkills)
   const setCommands = useSkillsStore((state) => state.setCommands)
   const addMessage = useChatStore((state) => state.addMessage)
@@ -54,6 +55,7 @@ export default function App() {
   const setConnectionLabel = useChatStore((state) => state.setConnectionLabel)
   const touchAssistantMessage = useChatStore((state) => state.touchAssistantMessage)
   const setWindowState = useDesktopWindowStore((state) => state.setState)
+  const setMods = useModsStore((state) => state.setMods)
 
   useEffect(() => {
     if (!window.hermesDesktop) {
@@ -63,7 +65,7 @@ export default function App() {
     void window.hermesDesktop.getWorkspaceSnapshot().then(setSnapshot).catch(() => {
       // 当 IPC 不可用时，保留默认占位数据。
     })
-    void window.hermesDesktop.getHermesConfig().then(setHermesConfig).catch(() => {
+    void window.hermesDesktop.getHermesConfig().then(setModelConfig).catch(() => {
       // 当 preload bridge 不可用时，保留默认配置展示。
     })
     void window.hermesDesktop.getHermesSkills().then(setSkills).catch(() => {
@@ -72,11 +74,17 @@ export default function App() {
     void window.hermesDesktop.getHermesCommands().then(setCommands).catch(() => {
       // 当 preload bridge 不可用时，保留默认命令列表。
     })
+    void window.hermesDesktop.scanMods().then((result) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setMods(result as any)
+    }).catch(() => {
+      // 当 preload bridge 不可用时，保留默认模组列表。
+    })
 
     void window.hermesDesktop.getWindowState().then(setWindowState).catch(() => {
       // 当 IPC 不可用时，保留默认窗口状态。
     })
-  }, [setHermesConfig, setSkills, setSnapshot, setWindowState])
+  }, [setModelConfig, setSkills, setMods, setSnapshot, setWindowState])
 
   useEffect(() => {
     if (!window.hermesDesktop || !selectedFilePath) {

@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Terminal,
 } from 'lucide-react'
-import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
 import { CollapsibleSection } from './CollapsibleSection'
 
@@ -28,13 +27,15 @@ export function SessionInfo() {
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const tasks = useWorkspaceStore((state) => state.tasks)
   const files = useWorkspaceStore((state) => state.files)
-  const addSessionMarker = useChatStore((state) => state.addSessionMarker)
   const [status, setStatus] = useState<string | null>(null)
   const [worktrees, setWorktrees] = useState<HermesWorktreeInfo[]>([])
   const [selectedWorktreePath, setSelectedWorktreePath] = useState('')
   const [newWorktreeName, setNewWorktreeName] = useState('')
   const [newWorktreeDirectory, setNewWorktreeDirectory] = useState('')
   const [sessionLoading, setSessionLoading] = useState(false)
+
+  const isNativeBackend = windows.distro === 'native'
+  const isWslBackend = windows.distro && windows.distro !== 'native'
 
   const selectedWorktree = useMemo(
     () => worktrees.find((item) => item.path === selectedWorktreePath) ?? null,
@@ -89,12 +90,11 @@ export function SessionInfo() {
         directory: newWorktreeDirectory,
       })
       setSnapshot(result.snapshot)
-      addSessionMarker(`Started a new ACP session in worktree ${result.worktree.path}.`)
       setNewWorktreeName('')
       setNewWorktreeDirectory('')
       await refreshWorktrees()
       setSelectedWorktreePath(result.worktree.path)
-      setStatus(`Created worktree ${result.worktree.name} on ${result.worktree.branch}.`)
+      setStatus(`Created worktree ${result.worktree.name} on ${result.worktree.branch} (session preserved).`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to create worktree.')
     } finally {
@@ -126,11 +126,10 @@ export function SessionInfo() {
 
     setSessionLoading(true)
     try {
-      const snapshot = await window.hermesDesktop.switchHermesWorktree(selectedWorktree.path)
+      const snapshot = await window.hermesDesktop.softSwitchWorkspace(selectedWorktree.path)
       setSnapshot(snapshot)
-      addSessionMarker(`Started a new ACP session in ${snapshot.cwd}.`)
       await refreshWorktrees()
-      setStatus(`Switched to ${selectedWorktree.name} and started a new session.`)
+      setStatus(`Switched to ${selectedWorktree.name} (session preserved).`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to switch worktree.')
     } finally {
@@ -151,11 +150,10 @@ export function SessionInfo() {
         return
       }
 
-      const snapshot = await window.hermesDesktop.switchWorkspaceRoot(selected.path)
+      const snapshot = await window.hermesDesktop.softSwitchWorkspace(selected.path)
       setSnapshot(snapshot)
-      addSessionMarker(`Started a new ACP session in workspace ${snapshot.cwd}.`)
       await refreshWorktrees()
-      setStatus(`Switched workspace to ${snapshot.cwd}.`)
+      setStatus(`Switched workspace to ${snapshot.cwd} (session preserved).`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to switch workspace.')
     } finally {
@@ -373,8 +371,8 @@ export function SessionInfo() {
               <p className="text-slate-200">{windows.hostPlatform ?? 'win32'}</p>
             </div>
             <div>
-              <p className="text-slate-500">WSL</p>
-              <p className="text-slate-200">{windows.distro ?? 'Auto'}</p>
+              <p className="text-slate-500">Backend</p>
+              <p className="text-slate-200">{isNativeBackend ? 'Native' : windows.distro ?? 'Auto'}</p>
             </div>
           </div>
           <p className="mt-2 rounded-full border border-cyan-300/15 bg-cyan-300/8 px-2 py-1 text-[11px] text-cyan-100">
@@ -382,10 +380,12 @@ export function SessionInfo() {
           </p>
         </div>
 
+        {isWslBackend && (
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
           <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">WSL Path</p>
           <p className="mt-2 break-all text-xs leading-5 text-slate-200">{windows.wslPath}</p>
         </div>
+        )}
 
         <div className="rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-3">
           <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Windows Path</p>

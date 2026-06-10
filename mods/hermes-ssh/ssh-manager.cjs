@@ -1,16 +1,56 @@
 // SSH connection manager — singleton managing multiple server connections
 const { Client } = require('ssh2')
-const { readFileSync } = require('fs')
+const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('fs')
 const path = require('path')
+
+const MOD_CONFIG_PATH = path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+
+function readModConfig() {
+  try {
+    return JSON.parse(readFileSync(MOD_CONFIG_PATH, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function saveModConfig(allConfigs) {
+  const dir = path.dirname(MOD_CONFIG_PATH)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  writeFileSync(MOD_CONFIG_PATH, JSON.stringify(allConfigs, null, 2), 'utf8')
+}
+
+function persistServerConfigs(servers) {
+  const all = readModConfig()
+  all['hermes-ssh'] = { ...(all['hermes-ssh'] || {}), servers: JSON.stringify(servers) }
+  saveModConfig(all)
+}
+
+function loadServerConfigsFromDisk() {
+  try {
+    const all = readModConfig()
+    const raw = all['hermes-ssh']?.servers
+    if (raw && typeof raw === 'string') {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        console.log('[ssh-manager] Loaded', parsed.length, 'server configs from disk')
+        return parsed
+      }
+    }
+  } catch (err) {
+    console.warn('[ssh-manager] Failed to load configs from disk:', err.message)
+  }
+  return []
+}
 
 class SSHManager {
   constructor() {
     this.connections = new Map()  // host:port -> { client, sftp, info }
-    this.serverConfigs = []       // persisted server list
+    this.serverConfigs = loadServerConfigsFromDisk()
   }
 
   setServerConfigs(servers) {
     this.serverConfigs = servers
+    try { persistServerConfigs(servers) } catch { /* best-effort */ }
   }
 
   getServerConfigs() {
@@ -19,6 +59,9 @@ class SSHManager {
       port: s.port || 22,
       username: s.username,
       name: s.name || `${s.username}@${s.host}`,
+      authType: s.authType || 'password',
+      password: s.password,
+      keyPath: s.keyPath,
       connected: this.connections.has(`${s.host}:${s.port || 22}`),
     }))
   }
@@ -44,7 +87,29 @@ class SSHManager {
       }
 
       if (auth.password) config.password = auth.password
-      if (auth.privateKey) config.privateKey = auth.privateKey
+      if (auth.privateKey) {
+        // privateKey can be a file path or the raw key content.
+        // ssh2 needs the actual key content; it cannot auto-read files.
+        const key = auth.privateKey.trim()
+        try {
+          // Expand ~ to user home dir
+          let keyPath = key
+          if (keyPath.startsWith('~')) {
+            const home = process.env.HOME || process.env.USERPROFILE || ''
+            keyPath = path.join(home, keyPath.slice(1))
+          }
+          if (keyPath.includes('\n') || keyPath.startsWith('-----BEGIN')) {
+            // Raw key content
+            config.privateKey = key
+          } else {
+            // File path — read the key from disk
+            config.privateKey = readFileSync(keyPath, 'utf8')
+          }
+        } catch {
+          // If we can't read it as a file, pass as-is (might be raw key)
+          config.privateKey = key
+        }
+      }
       if (auth.passphrase) config.passphrase = auth.passphrase
 
       client.on('ready', () => {

@@ -15,21 +15,14 @@ export interface HermesCommandItem {
 }
 
 interface SkillsStore {
-  provider: string
-  model: string
-  source: string
   skills: SkillItem[]
   commands: HermesCommandItem[]
   toggleSkill: (id: string) => void
-  setHermesConfig: (config: { provider: string; model: string; source: string }) => void
   setSkills: (skills: SkillItem[]) => void
   setCommands: (commands: HermesCommandItem[]) => void
 }
 
 export const useSkillsStore = create<SkillsStore>((set) => ({
-  provider: 'custom',
-  model: '读取中...',
-  source: '~/.hermes/config.yaml',
   commands: [],
   skills: [
     { id: 'web', name: 'web', description: '浏览并校验外部信息。', enabled: true },
@@ -43,7 +36,6 @@ export const useSkillsStore = create<SkillsStore>((set) => ({
         skill.id === id ? { ...skill, enabled: !skill.enabled } : skill,
       ),
     })),
-  setHermesConfig: ({ provider, model, source }) => set({ provider, model, source }),
   setSkills: (skills) => set({ skills }),
   setCommands: (commands) => set({ commands }),
 }))

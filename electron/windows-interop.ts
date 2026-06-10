@@ -10,6 +10,7 @@ import {
   wslPathToUncPath,
   wslPathToWindowsPath,
 } from './wsl-paths.js'
+import { getBackendProvider } from './backend.js'
 
 export {
   resolveWslDistro,
@@ -62,6 +63,20 @@ export async function writeWindowsClipboard(text: string) {
 }
 
 export async function getWindowsInteropSnapshot(hostPath: string): Promise<WindowsInteropSnapshot> {
+  const backend = getBackendProvider()
+
+  if (backend.type === 'native') {
+    return {
+      available: true,
+      hostPlatform: process.platform,
+      distro: 'native',
+      workspaceMode: 'windows-workspace',
+      wslPath: hostPath,
+      windowsPath: path.resolve(hostPath),
+      uncPath: null,
+    }
+  }
+
   const distro = await resolveWslDistro()
   const workspaceMode = hostPath.startsWith('\\\\wsl') ? 'wsl-workspace' : 'windows-workspace'
   const wslPath = await toWslPath(hostPath, distro)

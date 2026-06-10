@@ -1,0 +1,17 @@
+{
+  "name": "hermes-discipline",
+  "version": "1.0.0",
+  "description": "自律打卡展板 — 每日时间计划 + 自律目标 + AI 总结评分",
+  "author": "Hermes Desktop",
+  "icon": "calendar",
+  "entry": "index.cjs",
+  "hermesVersion": ">=0.1.0",
+  "permissions": ["panels", "ipc", "config", "fs"],
+  "config": {
+    "weekdaySchedule": { "type": "json", "default": [], "label": "工作日模板" },
+    "weekendSchedule": { "type": "json", "default": [], "label": "周末模板" }
+  },
+  "skills": [
+    { "id": "discipline", "name": "自律打卡", "description": "读取/管理每日自律计划、目标与AI总结", "category": "自律" }
+  ]
+}

@@ -49,12 +49,12 @@ export function DraggableCard({ id, children, onMove }: DraggableCardProps) {
       onDrop={handleDrop}
       className={`relative transition-all duration-150 ${
         dragOver
-          ? 'rounded-[28px] ring-2 ring-cyan-300/40 ring-offset-2 ring-offset-transparent'
+          ? 'rounded-2xl ring-2 ring-cyan-300/40 ring-offset-2 ring-offset-transparent'
           : ''
       }`}
     >
       {dragOver ? (
-        <div className="absolute inset-0 z-10 rounded-[28px] bg-cyan-300/5 pointer-events-none" />
+        <div className="absolute inset-0 z-10 rounded-2xl bg-cyan-300/5 pointer-events-none" />
       ) : null}
       {children}
     </div>

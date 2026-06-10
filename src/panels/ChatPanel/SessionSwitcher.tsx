@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { History, MessageSquarePlus, RefreshCw, Terminal } from 'lucide-react'
+import { History, MessageSquarePlus, Pencil, RefreshCw, Terminal, Trash2 } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
 import { useSessionStore } from '@/store/sessions'
@@ -17,6 +17,9 @@ export function SessionSwitcher({ onClose }: { onClose: () => void }) {
   const [sessions, setSessions] = useState<HermesSessionInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const editRef = useRef<HTMLInputElement>(null)
   const ref = useRef<HTMLDivElement>(null)
 
   const refreshSessions = async () => {
@@ -82,6 +85,57 @@ export function SessionSwitcher({ onClose }: { onClose: () => void }) {
     }
   }
 
+  const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.hermesDesktop) return
+    if (!confirm('确定要删除此会话吗？此操作不可撤销。')) return
+    setLoadingId(sessionId)
+    try {
+      const result = await window.hermesDesktop.deleteHermesSession(sessionId)
+      if (!result.ok) {
+        alert(`删除失败: ${result.error ?? '未知错误'}`)
+        return
+      }
+      await refreshSessions()
+    } finally {
+      setLoadingId(null)
+    }
+  }
+
+  const handleStartRename = (session: HermesSessionInfo, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditingId(session.sessionId)
+    setEditTitle(session.title || session.sessionId.slice(0, 16))
+    setTimeout(() => editRef.current?.focus(), 0)
+  }
+
+  const handleConfirmRename = async () => {
+    if (!window.hermesDesktop || !editingId) return
+    const title = editTitle.trim()
+    if (!title) {
+      setEditingId(null)
+      return
+    }
+    setLoadingId(editingId)
+    try {
+      const result = await window.hermesDesktop.renameHermesSession(editingId, title)
+      if (!result.ok) {
+        alert(`重命名失败: ${result.error ?? '未知错误'}`)
+        return
+      }
+      await refreshSessions()
+    } finally {
+      setLoadingId(null)
+      setEditingId(null)
+      setEditTitle('')
+    }
+  }
+
+  const handleCancelRename = () => {
+    setEditingId(null)
+    setEditTitle('')
+  }
+
   return (
     <div
       ref={ref}
@@ -110,20 +164,60 @@ export function SessionSwitcher({ onClose }: { onClose: () => void }) {
         ) : (
           sessions.map((item) => {
             const isLoading = loadingId === item.sessionId
+            const isEditing = editingId === item.sessionId
             return (
               <div
                 key={item.sessionId}
                 className="flex items-center gap-3 px-4 py-2.5 transition hover:bg-white/5"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-100">
-                    {item.title || item.sessionId.slice(0, 16)}
-                  </p>
+                  {isEditing ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        ref={editRef}
+                        type="text"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void handleConfirmRename()
+                          if (e.key === 'Escape') handleCancelRename()
+                        }}
+                        onBlur={() => handleCancelRename()}
+                        className="w-full rounded-lg border border-cyan-300/30 bg-slate-900 px-2 py-0.5 text-sm text-slate-100 outline-none"
+                      />
+                    </div>
+                  ) : (
+                    <p
+                      className="truncate text-sm font-medium text-slate-100 cursor-pointer hover:text-cyan-200 transition"
+                      onDoubleClick={(e) => handleStartRename(item, e)}
+                      title="双击重命名"
+                    >
+                      {item.title || item.sessionId.slice(0, 16)}
+                    </p>
+                  )}
                   <p className="mt-0.5 truncate text-xs text-slate-500">{item.cwd}</p>
                   {item.updatedAt ? (
                     <p className="mt-0.5 text-[11px] text-slate-600">{item.updatedAt}</p>
                   ) : null}
                 </div>
+                <button
+                  type="button"
+                  onClick={(e) => handleStartRename(item, e)}
+                  disabled={isLoading}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition enabled:hover:border-amber-300/30 enabled:hover:text-amber-200 disabled:cursor-not-allowed disabled:text-slate-600"
+                  title="重命名"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => void handleDeleteSession(item.sessionId, e)}
+                  disabled={isLoading}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition enabled:hover:border-rose-300/30 enabled:hover:text-rose-200 disabled:cursor-not-allowed disabled:text-slate-600"
+                  title="删除"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
                 <button
                   type="button"
                   onClick={() => void handleLoadSession(item)}

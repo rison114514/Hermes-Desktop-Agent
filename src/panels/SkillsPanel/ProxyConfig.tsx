@@ -19,15 +19,6 @@ export function ProxyConfig() {
     window.hermesDesktop.setProxyConfig({ enabled, type, host, port }).catch(() => { /* noop */ })
   }, [])
 
-  useEffect(() => {
-    const { host } = useProxyStore.getState()
-    if (host === 'host.docker.internal' && window.hermesDesktop?.detectProxyHost) {
-      window.hermesDesktop.detectProxyHost().then((r) => {
-        if (r.host) setHost(r.host)
-      }).catch(() => { /* noop */ })
-    }
-  }, [])
-
   const [detecting, setDetecting] = useState(false)
   const [restarting, setRestarting] = useState(false)
 
@@ -57,20 +48,14 @@ export function ProxyConfig() {
     : '已禁用'
 
   return (
-    <div className="rounded-[28px] border border-white/10 bg-white/5 p-4">
+    <div>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         className="flex w-full items-center justify-between gap-3 text-left"
       >
-        <div className="flex min-w-0 items-center gap-2">
-          <Globe className="h-4 w-4 shrink-0 text-emerald-200" />
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-[0.28em] text-slate-400">网络代理</p>
-            <p className="mt-0.5 truncate text-[11px] text-slate-500">{open ? '' : summary}</p>
-          </div>
-        </div>
+        <p className="truncate text-[11px] text-slate-500">{open ? '' : summary}</p>
         <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${open ? 'rotate-180' : ''}`} />
       </button>
 
@@ -139,7 +124,7 @@ export function ProxyConfig() {
                 type="text"
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder="host.docker.internal"
+                placeholder="127.0.0.1"
                 className="min-w-0 flex-1 rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-300/50"
               />
               <button

@@ -2,7 +2,9 @@
   [string]$Distro,
   [switch]$AutoDetectDistro,
   [switch]$Build,
-  [switch]$SkipBootstrap
+  [switch]$SkipBootstrap,
+  [ValidateSet('native', 'wsl')]
+  [string]$Backend = 'native'
 )
 
 $ErrorActionPreference = "Stop"
@@ -593,49 +595,85 @@ function Ensure-HermesModelConfigured {
 
 }
 
+$env:HERMES_BACKEND = $Backend
+
 Require-NodeRuntime
 
-if (-not $SkipBootstrap) {
-  Invoke-Step "Checking WSL availability" {
-    Ensure-WslReady
+if ($Backend -eq 'wsl') {
+  # ---- WSL backend ----
+  if (-not $SkipBootstrap) {
+    Invoke-Step "Checking WSL availability" {
+      Ensure-WslReady
+    }
+  } else {
+    Require-Command "wsl.exe" "Enable WSL2 and install a Linux distro."
+  }
+
+  if (-not $AutoDetectDistro -and [string]::IsNullOrWhiteSpace($Distro)) {
+    $Distro = $env:HERMES_WSL_DISTRO
+  }
+
+  if ($AutoDetectDistro -or [string]::IsNullOrWhiteSpace($Distro)) {
+    Invoke-Step "Detecting default WSL distro" {
+      $script:Distro = Get-DefaultWslDistro
+      Write-Host "Using WSL distro: $script:Distro"
+    }
+  }
+
+  $env:HERMES_WSL_DISTRO = $Distro
+
+  Invoke-Step "Checking WSL distro: $Distro" {
+    Invoke-WslBash $Distro "printf 'WSL: '; uname -sr"
+  }
+
+  if (-not $SkipBootstrap) {
+    Ensure-WslBasics $Distro
+    Ensure-HermesInstalled $Distro
+    Ensure-HermesModelConfigured $Distro
+  }
+
+  Invoke-Step "Checking Hermes ACP in WSL" {
+    Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null && hermes acp --help >/dev/null'
+  }
+
+  # Hermes is fail-closed: it auto-denies a permission request once approvals.timeout
+  # (default 60s) elapses. There is no literal "infinite" value, so we set a very large
+  # second count (~10 years) to make the wait effectively unbounded.
+  Invoke-Step "Setting Hermes approval timeout to effectively infinite" {
+    Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; hermes config set approvals.timeout 315360000'
   }
 } else {
-  Require-Command "wsl.exe" "Enable WSL2 and install a Linux distro."
-}
-
-if (-not $AutoDetectDistro -and [string]::IsNullOrWhiteSpace($Distro)) {
-  $Distro = $env:HERMES_WSL_DISTRO
-}
-
-if ($AutoDetectDistro -or [string]::IsNullOrWhiteSpace($Distro)) {
-  Invoke-Step "Detecting default WSL distro" {
-    $script:Distro = Get-DefaultWslDistro
-    Write-Host "Using WSL distro: $script:Distro"
+  # ---- Native Windows backend ----
+  Invoke-Step "Checking native Hermes installation" {
+    $hermesCmd = Get-Command "hermes" -ErrorAction SilentlyContinue
+    if (-not $hermesCmd) {
+      # Try known install locations before failing
+      $candidates = @(
+        "$env:LOCALAPPDATA\hermes\venv\Scripts\hermes.exe",
+        "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\hermes.exe"
+      )
+      $found = $null
+      foreach ($c in $candidates) {
+        if (Test-Path $c) { $found = $c; break }
+      }
+      if ($found) {
+        $env:PATH = "$(Split-Path $found -Parent);$env:PATH"
+        Write-Host "    OK: Hermes found at $found" -ForegroundColor Green
+      } else {
+        throw "Hermes Agent is not installed. Run setup-native.cmd first, or install manually: pip install hermes-agent"
+      }
+    } else {
+      Write-Host "    OK: $(& hermes --version 2>&1)" -ForegroundColor Green
+    }
   }
-}
 
-$env:HERMES_WSL_DISTRO = $Distro
-
-Invoke-Step "Checking WSL distro: $Distro" {
-  Invoke-WslBash $Distro "printf 'WSL: '; uname -sr"
-}
-
-if (-not $SkipBootstrap) {
-  Ensure-WslBasics $Distro
-  Ensure-HermesInstalled $Distro
-  Ensure-HermesModelConfigured $Distro
-}
-
-Invoke-Step "Checking Hermes ACP in WSL" {
-  Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null && hermes acp --help >/dev/null'
-}
-
-# Hermes is fail-closed: it auto-denies a permission request once approvals.timeout
-# (default 60s) elapses. There is no literal "infinite" value, so we set a very large
-# second count (~10 years) to make the wait effectively unbounded — letting the user
-# take as long as they need to approve a permission request.
-Invoke-Step "Setting Hermes approval timeout to effectively infinite" {
-  Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; hermes config set approvals.timeout 315360000'
+  # Hermes is fail-closed: it auto-denies a permission request once approvals.timeout
+  # (default 60s) elapses. There is no literal "infinite" value, so we set a very large
+  # second count (~10 years) to make the wait effectively unbounded.
+  Invoke-Step "Setting Hermes approval timeout to effectively infinite" {
+    & hermes config set approvals.timeout 315360000 2>&1 | Out-Null
+    Write-Host "    OK: Approvals timeout set to 10 years" -ForegroundColor Green
+  }
 }
 
 if (-not (Test-WindowsNpmDependencies)) {

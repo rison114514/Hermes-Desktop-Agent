@@ -19,7 +19,10 @@ Thumbs.db
 .codex
 .worktrees/
 docs/
+.hermes/
 .hermes-tmp/
 .hermes-install-stamp
 .hermes-build-stamp
+mods/.hermes-mod-config.json
+mods/.hermes-mod-enabled.json
 Hermes-Desktop-Agent.code-workspace
