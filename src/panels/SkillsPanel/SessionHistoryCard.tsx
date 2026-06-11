@@ -84,9 +84,12 @@ export function SessionHistoryCard() {
         cwd: result?.cwd ?? session.cwd,
       })
 
-      // 2. Switch UI + backend to the tab immediately
+      // 2. Switch UI + backend to the tab immediately.
+      //    Must await the backend switch so loadHermesSession targets the
+      //    correct bridge — otherwise the first load after creating a tab
+      //    races and lands on the previous active bridge.
       switchTab(tabId)
-      window.hermesDesktop.switchSession(tabId).catch(() => {})
+      await window.hermesDesktop.switchSession(tabId)
       if (tabId !== (activeTabId ?? 'default')) {
         sessionTabMap.current.set(session.sessionId, tabId)
       }
@@ -94,10 +97,9 @@ export function SessionHistoryCard() {
       // 3. Show placeholder in chat right away
       resetForSession(tabName, tabId)
 
-      // 4. Load session content in background — events stream in as they arrive
-      window.hermesDesktop.loadHermesSession(session.sessionId, session.cwd)
-        .then((snapshot) => setSnapshot(snapshot))
-        .catch((err) => console.warn('[SessionHistory] load failed:', err instanceof Error ? err.message : err))
+      // 4. Load session content — the active bridge is now the new tab's bridge
+      const snapshot = await window.hermesDesktop.loadHermesSession(session.sessionId, session.cwd)
+      setSnapshot(snapshot)
     } catch (err) {
       console.warn('[SessionHistory] failed to load session:', err instanceof Error ? err.message : err)
     } finally {

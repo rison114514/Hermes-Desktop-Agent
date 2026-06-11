@@ -59,9 +59,11 @@ export function SessionSwitcher({ onClose }: { onClose: () => void }) {
     if (!window.hermesDesktop) return
     setLoadingId(session.sessionId)
     try {
-      // Force switch to default tab — session loading only works on the default bridge
+      // Switch to the default tab on both frontend and backend so the
+      // ACP session loads into the correct bridge.
       useSessionStore.getState().setActive('default')
       useChatStore.getState().setActiveSession('default')
+      await window.hermesDesktop.switchSession('default')
       resetForSession(`Loading ACP session ${session.title || session.sessionId}...`, 'default')
       const snapshot = await window.hermesDesktop.loadHermesSession(session.sessionId, session.cwd)
       setSnapshot(snapshot)
