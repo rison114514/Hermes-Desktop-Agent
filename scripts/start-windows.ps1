@@ -640,7 +640,27 @@ if ($Backend -eq 'wsl') {
   # (default 60s) elapses. There is no literal "infinite" value, so we set a very large
   # second count (~10 years) to make the wait effectively unbounded.
   Invoke-Step "Setting Hermes approval timeout to effectively infinite" {
-    Invoke-WslBash $Distro 'export PATH="$HOME/.local/bin:$PATH"; hermes config set approvals.timeout 315360000'
+    $wslScript = @'
+set -e
+HERMES_HOME="$HOME/.hermes"
+mkdir -p "$HERMES_HOME"
+CONFIG="$HERMES_HOME/config.yaml"
+if [ -f "$CONFIG" ]; then
+  if grep -q "^approvals:" "$CONFIG" 2>/dev/null; then
+    if grep -q "^  timeout:" "$CONFIG" 2>/dev/null; then
+      sed -i 's/^  timeout:.*/  timeout: 315360000/' "$CONFIG"
+    else
+      sed -i '/^approvals:/a\  timeout: 315360000' "$CONFIG"
+    fi
+  else
+    printf '\napprovals:\n  timeout: 315360000\n' >> "$CONFIG"
+  fi
+else
+  printf 'approvals:\n  timeout: 315360000\n' > "$CONFIG"
+fi
+echo "    OK: Approvals timeout set to 10 years (direct YAML)"
+'@
+    Invoke-WslBash $Distro $wslScript
   }
 } else {
   # ---- Native Windows backend ----
@@ -670,9 +690,39 @@ if ($Backend -eq 'wsl') {
   # Hermes is fail-closed: it auto-denies a permission request once approvals.timeout
   # (default 60s) elapses. There is no literal "infinite" value, so we set a very large
   # second count (~10 years) to make the wait effectively unbounded.
+  #
+  # We determine hermesHome the same way the Electron backend does:
+  # %LOCALAPPDATA%\hermes  →  same directory that hermes CLI uses for config.yaml.
   Invoke-Step "Setting Hermes approval timeout to effectively infinite" {
-    & hermes config set approvals.timeout 315360000 2>&1 | Out-Null
-    Write-Host "    OK: Approvals timeout set to 10 years" -ForegroundColor Green
+    $hermesHome = Join-Path $env:LOCALAPPDATA "hermes"
+    $configPath = Join-Path $hermesHome "config.yaml"
+
+    # Ensure the config directory exists (hermes may not have run yet)
+    New-Item -ItemType Directory -Path $hermesHome -Force | Out-Null
+
+    if (Test-Path $configPath) {
+      $content = Get-Content $configPath -Raw -Encoding UTF8
+    } else {
+      $content = ""
+    }
+
+    # Set / update approvals.timeout in the YAML file.  We avoid depending on
+    # the `hermes config set` CLI so this works even if hermes is not yet in PATH.
+    if ($content -match '(?m)^approvals:\s*\r?$') {
+      if ($content -match '(?m)^  timeout:\s*\d+\s*\r?$') {
+        $content = $content -replace '(?m)^  timeout:\s*\d+', '  timeout: 315360000'
+      } else {
+        $content = $content -replace '(?m)^(approvals:\s*\r?$)', "`$1`n  timeout: 315360000"
+      }
+    } else {
+      if ($content.Length -gt 0 -and -not $content.EndsWith("`n")) {
+        $content += "`n"
+      }
+      $content += "`napprovals:`n  timeout: 315360000`n"
+    }
+
+    [System.IO.File]::WriteAllText($configPath, $content, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "    OK: Approvals timeout set to 10 years (direct YAML)" -ForegroundColor Green
   }
 }
 
