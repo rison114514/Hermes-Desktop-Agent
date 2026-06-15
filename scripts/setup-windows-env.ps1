@@ -1,18 +1,32 @@
+# Hermes Desktop Agent - Native Windows one-click environment setup.
+#
+# Downloads and runs the official Hermes Agent Windows installer (no WSL),
+# then configures it for use with Hermes Desktop Agent.
+#
+# Usage from repo root:
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-native.ps1
+# Or just double-click setup-native.cmd
+
 param(
-  [string]$Distro,
-  [switch]$SkipModelSetup
+  [switch]$SkipApprovals
 )
 
 $ErrorActionPreference = "Stop"
 
+$Global:ProgressPreference = 'SilentlyContinue'
+
+# Full UTF-8 setup for Chinese Windows (GBK default code page 936).
+# Without this, the Hermes installer's box-drawing characters render as garbled.
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$utf8Bom   = [System.Text.UTF8Encoding]::new($true)
 [Console]::OutputEncoding = $utf8NoBom
+[Console]::InputEncoding  = $utf8NoBom
 $OutputEncoding = $utf8NoBom
+# Force the console code page to UTF-8 (equivalent to chcp 65001)
+& chcp.com 65001 2>$null | Out-Null
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
-$env:LANG = "C.UTF-8"
-$env:LC_ALL = "C.UTF-8"
-$env:HERMES_TEXT_ENCODING = "utf-8"
+$env:LC_ALL = "en_US.UTF-8"
 
 function Invoke-Step {
   param(
@@ -25,600 +39,209 @@ function Invoke-Step {
   & $Command
 }
 
-function Test-Administrator {
-  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
-  return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+function Write-Info {
+  param([string]$Message)
+  Write-Host "    $Message" -ForegroundColor Gray
 }
 
-function Require-Administrator {
-  if (-not (Test-Administrator)) {
-    throw "This step needs administrator rights. Right-click setup-hermes-environment.cmd and choose Run as administrator."
+function Write-Ok {
+  param([string]$Message)
+  Write-Host "    OK: $Message" -ForegroundColor Green
+}
+
+function Write-Warn {
+  param([string]$Message)
+  Write-Host "    WARN: $Message" -ForegroundColor Yellow
+}
+
+# ---- Helper: resolve hermes.exe (PATH or known locations) ----
+
+function Resolve-HermesExe {
+  # Returns the best callable hermes (as a string) or $null.
+  $cmd = Get-Command "hermes" -ErrorAction SilentlyContinue
+  if ($cmd) {
+    try {
+      $v = & $cmd.Source --version 2>&1
+      if ($LASTEXITCODE -eq 0) { return $cmd.Source }
+    } catch {}
   }
-}
 
-function Require-Command {
-  param(
-    [string]$Name,
-    [string]$InstallHint
+  $candidates = @(
+    "$env:LOCALAPPDATA\hermes\venv\Scripts\hermes.exe",
+    "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\hermes.exe"
   )
-
-  if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-    throw "$Name was not found. $InstallHint"
+  foreach ($c in $candidates) {
+    if (Test-Path $c) {
+      try {
+        $v = & $c --version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+          # Add to PATH so subsequent steps find it
+          $env:PATH = "$(Split-Path $c -Parent);$env:PATH"
+          return $c
+        }
+      } catch {}
+    }
   }
+  return $null
 }
 
-function Quote-ProcessArgument {
-  param([string]$Argument)
+# ---- Header ----
 
-  if ($null -eq $Argument) {
-    return '""'
-  }
+Write-Host "============================================" -ForegroundColor Magenta
+Write-Host " Hermes Desktop Agent - Native Setup" -ForegroundColor Magenta
+Write-Host "============================================" -ForegroundColor Magenta
+Write-Host ""
+Write-Host "This script installs & configures Hermes Agent on Windows." -ForegroundColor White
+Write-Host "No WSL / Docker / Hyper-V required." -ForegroundColor White
+Write-Host ""
 
-  if ($Argument -notmatch '[\s"]') {
-    return $Argument
-  }
+# ---- Pre-check: is Hermes already installed? ----
 
-  return '"' + ($Argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
-}
+$script:HermesExe = $null
 
-function Join-ProcessArguments {
-  param([string[]]$Arguments)
-
-  if (-not $Arguments) {
-    return ""
-  }
-
-  return ($Arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
-}
-
-function Invoke-Native {
-  param(
-    [string]$FilePath,
-    [string[]]$Arguments,
-    [System.Text.Encoding]$Encoding = [System.Text.Encoding]::UTF8
-  )
-
-  $psi = [System.Diagnostics.ProcessStartInfo]::new()
-  $psi.FileName = $FilePath
-  $psi.Arguments = Join-ProcessArguments $Arguments
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.StandardOutputEncoding = $Encoding
-  $psi.StandardErrorEncoding = $Encoding
-
-  $process = [System.Diagnostics.Process]::Start($psi)
-  $stdout = $process.StandardOutput.ReadToEnd()
-  $stderr = $process.StandardError.ReadToEnd()
-  $process.WaitForExit()
-
-  return [pscustomobject]@{
-    ExitCode = $process.ExitCode
-    Stdout = ($stdout -replace "`0", "").Trim()
-    Stderr = ($stderr -replace "`0", "").Trim()
-  }
-}
-
-function Get-NativeOutputText {
-  param($Result)
-
-  $parts = @($Result.Stdout, $Result.Stderr) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-    ForEach-Object { $_.Trim() }
-
-  return ($parts -join "`n")
-}
-
-function Test-NativeSuccess {
-  param($Result)
-
-  $output = Get-NativeOutputText $Result
-  return $Result.ExitCode -eq 0 `
-    -or $Result.ExitCode -eq 3010 `
-    -or $output -match "The operation completed successfully"
-}
-
-function Assert-NativeSuccess {
-  param(
-    [string]$Label,
-    $Result
-  )
-
-  if (Test-NativeSuccess $Result) {
-    return
-  }
-
-  $message = Get-NativeOutputText $Result
-  if ($message -match "0xc1900401") {
-    throw @"
-Failed to complete ${Label}: DISM returned 0xc1900401.
-This usually means Windows has a pending component/update transaction. Restart Windows, then run this setup again.
-
-$message
-"@
-  }
-
-  throw "Failed to complete $Label. $message"
-}
-
-function Get-WindowsOptionalFeatureStateText {
-  param([string]$FeatureName)
-
-  try {
-    $feature = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction Stop
-    return [string]$feature.State
-  } catch {
-    return "Unknown"
-  }
-}
-
-function Enable-HyperVIfNeeded {
-  $state = Get-WindowsOptionalFeatureStateText "Microsoft-Hyper-V-All"
-  Write-Host "Hyper-V: $state"
-
-  if ($state -eq "Enabled") {
-    return $false
-  }
-  if ($state -match "Pending") {
-    Write-Host "Hyper-V is pending. Restart Windows, then run this setup again." -ForegroundColor Yellow
-    return $true
-  }
-
-  Require-Administrator
-
-  $packageDirectory = Join-Path $env:SystemRoot "servicing\Packages"
-  $packages = @(Get-ChildItem -Path $packageDirectory -Filter "*Hyper-V*.mum" -ErrorAction SilentlyContinue)
-  if (-not $packages) {
-    Write-Host "No Hyper-V package manifests were found under $packageDirectory." -ForegroundColor Yellow
+Invoke-Step "Checking for existing Hermes installation" {
+  $found = Resolve-HermesExe
+  if ($found) {
+    try {
+      $v = & $found --version 2>&1
+      Write-Ok "Hermes $v already installed at: $found"
+      $script:HermesExe = $found
+    } catch {
+      Write-Info "Hermes binary found but --version failed: $_"
+    }
   } else {
-    Write-Host "Preparing Hyper-V packages for Windows Home compatibility..." -ForegroundColor Yellow
-    foreach ($package in $packages) {
-      $result = Invoke-Native "dism.exe" @(
-        "/online",
-        "/norestart",
-        "/add-package:$($package.FullName)"
-      )
+    Write-Info "Hermes not found - will download and install"
+  }
+}
 
-      if (-not (Test-NativeSuccess $result)) {
-        $message = Get-NativeOutputText $result
-        Write-Host "Skipped Hyper-V package $($package.Name). $message" -ForegroundColor Yellow
+# ---- Step 1: Install (only if not already installed) ----
+
+if (-not $script:HermesExe) {
+  Invoke-Step "Installing Hermes Agent (official Windows installer)" {
+
+    $installUrl = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"
+    $tempDir = Join-Path $env:TEMP "hermes-setup-$([System.DateTime]::Now.ToString('yyyyMMddHHmmss'))"
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    $installerPath = Join-Path $tempDir "hermes-install.ps1"
+
+    Write-Info "Downloading installer from: $installUrl"
+
+    $downloadOk = $false
+    $urls = @(
+      $installUrl,
+      "https://gh-proxy.com/$installUrl",
+      "https://ghfast.top/$installUrl"
+    )
+
+    foreach ($url in $urls) {
+      try {
+        Write-Info "Trying: $url"
+        Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing -TimeoutSec 30
+        if ((Get-Item $installerPath).Length -gt 500) {
+          $downloadOk = $true
+          Write-Ok "Downloaded installer ($((Get-Item $installerPath).Length) bytes)"
+          break
+        }
+      } catch {
+        Write-Warn "Failed: $_"
       }
     }
-  }
 
-  Write-Host "Enabling Hyper-V feature..." -ForegroundColor Yellow
-  $enable = Invoke-Native "dism.exe" @(
-    "/online",
-    "/enable-feature",
-    "/featurename:Microsoft-Hyper-V-All",
-    "/LimitAccess",
-    "/ALL",
-    "/norestart"
-  )
-  Assert-NativeSuccess "Hyper-V enablement" $enable
-
-  Write-Host "Hyper-V was enabled. Restart Windows, then run this setup again." -ForegroundColor Yellow
-  return $true
-}
-
-function Enable-WindowsFeatureIfNeeded {
-  param(
-    [string]$FeatureName,
-    [string]$Label
-  )
-
-  $state = Get-WindowsOptionalFeatureStateText $FeatureName
-  Write-Host "${Label}: $state"
-
-  if ($state -eq "Enabled") {
-    return $false
-  }
-  if ($state -match "Pending") {
-    Write-Host "$Label is pending. Restart Windows, then run this setup again." -ForegroundColor Yellow
-    return $true
-  }
-
-  Require-Administrator
-  Write-Host "Enabling $Label..." -ForegroundColor Yellow
-  try {
-    $result = Enable-WindowsOptionalFeature -Online -FeatureName $FeatureName -All -NoRestart -ErrorAction Stop
-    if ($result.RestartNeeded) {
-      Write-Host "$Label was enabled and needs a Windows restart." -ForegroundColor Yellow
-    } else {
-      Write-Host "$Label was enabled." -ForegroundColor Yellow
+    if (-not $downloadOk) {
+      throw "Could not download the Hermes installer. Please check your internet connection and try again."
     }
-    return $true
-  } catch {
-    throw "Failed to enable $Label. $($_.Exception.Message)"
-  }
-}
 
-function Ensure-WindowsPlatform {
-  $restartNeeded = $false
+    # The official installer calls `powershell` internally (to install uv).
+    # On some systems `powershell` may not resolve.  Patching the installer
+    # is more reliable than a PATH shim: the installer's Sync-EnvPath resets
+    # $env:Path from the registry at every stage, wiping temporary entries.
+    Write-Info "Patching installer for powershell.exe path..."
+    $psFullPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $oldCall = '        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null'
+    $newCall = "        & `"$psFullPath`" -ExecutionPolicy ByPass -c `"irm https://astral.sh/uv/install.ps1 | iex`" 2>&1 | Out-Null"
+    $installerContent = [System.IO.File]::ReadAllText($installerPath, $utf8NoBom)
+    $installerContent = $installerContent.Replace($oldCall, $newCall)
+    [System.IO.File]::WriteAllText($installerPath, $installerContent, $utf8NoBom)
 
-  if (Enable-HyperVIfNeeded) {
-    $restartNeeded = $true
-  }
-
-  if (Enable-WindowsFeatureIfNeeded "Microsoft-Windows-Subsystem-Linux" "Windows Subsystem for Linux") {
-    $restartNeeded = $true
-  }
-
-  if (Enable-WindowsFeatureIfNeeded "VirtualMachinePlatform" "Virtual Machine Platform") {
-    $restartNeeded = $true
-  }
-
-  if ($restartNeeded) {
+    Write-Info "Running installer (this may take several minutes)..."
     Write-Host ""
-    Write-Host "Windows virtualization/WSL features changed. Restart Windows, then run this setup again." -ForegroundColor Yellow
-    exit 3010
-  }
-}
 
-function Ensure-WslRuntime {
-  Require-Command "wsl.exe" "Install WSL from Microsoft Store or run 'wsl --install --no-distribution' in an elevated PowerShell."
+    & $installerPath
+    $installExit = $LASTEXITCODE
 
-  $status = Invoke-Native "wsl.exe" @("--status")
-  if ($status.ExitCode -eq 0) {
-    if (-not [string]::IsNullOrWhiteSpace($status.Stdout)) {
-      Write-Host $status.Stdout
-    }
-    return
-  }
+    Write-Host ""
 
-  Write-Host "WSL runtime is not ready. Installing WSL runtime without a Linux distribution..." -ForegroundColor Yellow
-  $install = Invoke-Native "wsl.exe" @("--install", "--no-distribution")
-  if (Test-NativeSuccess $install) {
-    Write-Host "WSL runtime installation command completed."
-    return
-  }
+    # Clean up temp installer
+    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 
-  $message = Get-NativeOutputText $install
-  throw @"
-WSL runtime installation failed.
-Install WSL manually, then run this setup again:
-1. Open an elevated PowerShell.
-2. Run: wsl --install --no-distribution
-3. If Microsoft download is blocked, install the official WSL MSI manually.
-
-$message
-"@
-}
-
-function Invoke-WslListVerbose {
-  Invoke-Native "wsl.exe" @("-l", "-v") ([System.Text.Encoding]::Unicode)
-}
-
-function Test-SystemWslDistro {
-  param([string]$Name)
-  return $Name -match '^docker-desktop(?:-data)?$'
-}
-
-function Test-UbuntuWslDistro {
-  param([string]$Name)
-  return $Name -match '^Ubuntu(?:[\s-]|$)'
-}
-
-function Get-WslDistroRows {
-  $result = Invoke-WslListVerbose
-  if ($result.ExitCode -ne 0) {
-    return @()
-  }
-
-  $lines = $result.Stdout -split "\r?\n" | ForEach-Object { ($_ -replace "`0", "").TrimEnd() }
-  $rows = foreach ($line in $lines) {
-    $trimmed = $line.Trim()
-    if (-not $trimmed -or $trimmed -match '^NAME\s+STATE\s+VERSION$') {
-      continue
+    if ($installExit -ne 0 -and $installExit -ne $null) {
+      Write-Warn "Installer exited with code $installExit (this may be normal)"
     }
 
-    $isDefault = $trimmed.StartsWith("*")
-    $clean = $trimmed -replace '^\*\s*', ''
-    $match = [regex]::Match($clean, '^(?<name>.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting|Exporting|Importing)\s+\d+\s*$')
-    $name = if ($match.Success) { $match.Groups["name"].Value.Trim() } else { ($clean -split "\s{2,}")[0].Trim() }
-    if ($name) {
-      [pscustomobject]@{
-        Name = $name
-        Default = $isDefault
-        System = Test-SystemWslDistro $name
-        Ubuntu = Test-UbuntuWslDistro $name
-      }
+    # Re-resolve hermes after install
+    $found = Resolve-HermesExe
+    if ($found) {
+      $script:HermesExe = $found
+      Write-Ok "Hermes ready at: $found"
+    } else {
+      Write-Warn "Hermes still not on PATH after install."
+      Write-Info "This is normal - close and reopen your terminal, then re-run this script."
+      Write-Info "It will detect the existing installation and skip straight to setup model."
     }
   }
-
-  return @($rows)
+} else {
+  Write-Host ""
+  Write-Ok "Skipping install - Hermes already available"
 }
 
-function Ensure-UbuntuDistro {
-  if (-not [string]::IsNullOrWhiteSpace($Distro)) {
-    if (Test-SystemWslDistro $Distro) {
-      throw "$Distro is a Docker Desktop internal distro and cannot run Hermes. Use Ubuntu instead."
-    }
-    return $Distro
+# ---- Step 2: Setup model ----
+
+if ($script:HermesExe) {
+  Invoke-Step "Configuring AI model (hermes setup model)" {
+    Write-Info "Launching interactive model setup..."
+    Write-Host ""
+    & $script:HermesExe setup model
+    Write-Host ""
+    Write-Ok "Model configuration complete"
   }
-
-  $rows = Get-WslDistroRows
-  $ubuntuRows = @($rows | Where-Object { -not $_.System -and $_.Ubuntu })
-  if ($ubuntuRows) {
-    $defaultUbuntu = $ubuntuRows | Where-Object { $_.Default } | Select-Object -First 1
-    if ($defaultUbuntu) {
-      return $defaultUbuntu.Name
-    }
-    return ($ubuntuRows | Select-Object -First 1).Name
-  }
-
-  $names = ($rows | ForEach-Object { $_.Name }) -join ", "
-  if ([string]::IsNullOrWhiteSpace($names)) {
-    $names = "(none)"
-  }
-
-  throw @"
-No usable Ubuntu WSL distro was found. Current distros: $names
-Docker Desktop distros are not supported.
-
-Install Ubuntu first, then run this setup again:
-1. Open Microsoft Store and install Ubuntu.
-2. If Store download returns 403 or is very slow, close proxy/VPN and retry.
-3. Launch Ubuntu once and complete the first-time Linux user setup.
-"@
+} else {
+  Write-Warn "Skipping model setup - hermes not available yet"
+  Write-Info "Re-run this script after restarting your terminal."
 }
 
-function Convert-WindowsPathToWslPath {
-  param([string]$WindowsPath)
+# ---- Step 3: Set approvals timeout ----
 
-  $fullPath = [System.IO.Path]::GetFullPath($WindowsPath)
-  if ($fullPath -notmatch "^([A-Za-z]):\\(.*)$") {
-    throw "Cannot convert non-drive Windows path to WSL path: $fullPath"
-  }
-
-  $drive = $matches[1].ToLowerInvariant()
-  $rest = $matches[2] -replace "\\", "/"
-  return "/mnt/$drive/$rest"
-}
-
-function New-WslScriptFile {
-  param([string]$Script)
-
-  $tempRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-  $tempDirectory = Join-Path $tempRoot ".hermes-tmp"
-  New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
-  $windowsPath = Join-Path $tempDirectory ("wsl-" + [guid]::NewGuid().ToString("N") + ".sh")
-  $lfScript = ($Script -replace "`r`n", "`n") -replace "`r", "`n"
-  [System.IO.File]::WriteAllText($windowsPath, $lfScript, $utf8NoBom)
-
-  return [pscustomobject]@{
-    WindowsPath = $windowsPath
-    WslPath = Convert-WindowsPathToWslPath $windowsPath
-  }
-}
-
-function Invoke-WslBash {
-  param(
-    [string]$DistroName,
-    [string]$Script
-  )
-
-  $scriptFile = New-WslScriptFile $Script
-  try {
-    wsl.exe -d $DistroName -- bash $scriptFile.WslPath
-    if ($LASTEXITCODE -ne 0) {
-      throw "WSL command failed with exit code $LASTEXITCODE."
-    }
-  } finally {
-    Remove-Item -LiteralPath $scriptFile.WindowsPath -Force -ErrorAction SilentlyContinue
-  }
-}
-
-function Test-WslBash {
-  param(
-    [string]$DistroName,
-    [string]$Script
-  )
-
-  $scriptFile = New-WslScriptFile $Script
-  try {
-    wsl.exe -d $DistroName -- bash $scriptFile.WslPath
-    return $LASTEXITCODE -eq 0
-  } finally {
-    Remove-Item -LiteralPath $scriptFile.WindowsPath -Force -ErrorAction SilentlyContinue
-  }
-}
-
-function ConvertTo-ShellSingleQuoted {
-  param([string]$Value)
-  return "'" + ($Value -replace "'", "'\''") + "'"
-}
-
-function Ensure-WslBasics {
-  param([string]$DistroName)
-
-  Invoke-Step "Checking WSL basics" {
-    $script = @'
-set -e
-
-missing=''
-for cmd in bash git curl; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    missing="$missing $cmd"
-  fi
-done
-
-if [ -n "$missing" ]; then
-  if ! command -v apt-get >/dev/null 2>&1; then
-    echo "Missing required commands:$missing"
-    echo "Install git, curl, and ca-certificates in Ubuntu, then run this setup again."
-    exit 1
-  fi
-
-  if [ "$(id -u)" -eq 0 ]; then
-    apt-get update
-    apt-get install -y git curl ca-certificates
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y git curl ca-certificates
-  else
-    echo "Missing sudo and current user is not root. Install git, curl, and ca-certificates in Ubuntu, then run this setup again."
-    exit 1
-  fi
-fi
-'@
-    Invoke-WslBash $DistroName $script
-  }
-}
-
-function Ensure-HermesInstalled {
-  param([string]$DistroName)
-
-  Invoke-Step "Checking Hermes in WSL" {
-    $checkScript = 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null 2>&1 && hermes --version >/dev/null 2>&1'
-    if (Test-WslBash $DistroName $checkScript) {
-      Write-Host "Hermes is installed."
-      return
-    }
-
-    Write-Host "Hermes was not found. Installing Hermes Agent in WSL..." -ForegroundColor Yellow
-    $script = @'
-set -e
-
-export PATH="$HOME/.local/bin:$PATH"
-export PYTHONUTF8=1
-export PYTHONIOENCODING=utf-8
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
-export UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
-export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"
-
-install_urls="
-https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh
-https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh
-https://ghfast.top/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh
-"
-
-installed=0
-for url in $install_urls; do
-  echo "Trying Hermes installer: $url"
-  if curl -fsSL "$url" -o /tmp/hermes-install.sh; then
-    bash /tmp/hermes-install.sh
-    rm -f /tmp/hermes-install.sh
-    installed=1
-    break
-  fi
-done
-
-if [ "$installed" != "1" ]; then
-  echo "Unable to download Hermes installer. Check network access, then run this setup again." >&2
-  exit 1
-fi
-
-command -v hermes >/dev/null 2>&1
-hermes --version
-'@
-    Invoke-WslBash $DistroName $script
-  }
-}
-
-function Set-HermesDeepSeekConfig {
-  param(
-    [string]$DistroName,
-    [string]$ApiKey
-  )
-
-  $apiKeyLiteral = ConvertTo-ShellSingleQuoted $ApiKey
-  $scriptTemplate = @'
-set -e
-
-export PATH="$HOME/.local/bin:$PATH"
-mkdir -p "$HOME/.hermes"
-
-api_key=__DEEPSEEK_API_KEY__
-escaped_api_key=$(printf '%s' "$api_key" | sed "s/'/''/g")
-
-if [ -f "$HOME/.hermes/config.yaml" ]; then
-  cp "$HOME/.hermes/config.yaml" "$HOME/.hermes/config.yaml.bak.$(date +%s)"
-fi
-
-cat > "$HOME/.hermes/config.yaml" <<EOF
-model:
-  provider: deepseek
-  default: deepseek-v4-pro
-providers:
-  deepseek:
-    api_key: '$escaped_api_key'
-    base_url: https://api.deepseek.com
-EOF
-
-hermes config check
-'@
-
-  $script = $scriptTemplate.Replace("__DEEPSEEK_API_KEY__", $apiKeyLiteral)
-  Invoke-WslBash $DistroName $script
-}
-
-function Ensure-HermesModelConfigured {
-  param([string]$DistroName)
-
-  if ($SkipModelSetup) {
-    Write-Host "Skipping Hermes model setup by request." -ForegroundColor Yellow
-    return
-  }
-
-}
-
-function Install-ModDependencies {
-  param([string]$RepoRoot)
-  $modsDir = Join-Path $RepoRoot "mods"
-  if (-not (Test-Path $modsDir)) { return }
-  Get-ChildItem $modsDir -Directory | ForEach-Object {
-    $modPkg = Join-Path $_.FullName "package.json"
-    $modModules = Join-Path $_.FullName "node_modules"
-    if ((Test-Path $modPkg) -and -not (Test-Path $modModules)) {
-      Write-Host "  Installing dependencies for MOD: $($_.Name)..."
-      Push-Location $_.FullName
-      try { npm install --no-audit --no-fund 2>&1 | Out-Null; Write-Host "  MOD $($_.Name) done." -ForegroundColor Green } catch { Write-Host "  MOD $($_.Name) failed: $_" -ForegroundColor Yellow }
-      Pop-Location
+if ($script:HermesExe -and -not $SkipApprovals) {
+  Invoke-Step "Configuring approvals timeout" {
+    try {
+      & $script:HermesExe config set approvals.timeout 315360000 2>&1 | Out-Null
+      Write-Ok "Approvals timeout set to 10 years (effectively infinite)"
+    } catch {
+      Write-Warn "Could not set approvals timeout: $_"
     }
   }
+} elseif (-not $script:HermesExe) {
+  Write-Info "Skipping approvals - hermes not available. Run after restart: hermes config set approvals.timeout 315360000"
 }
 
-function Test-HermesAcp {
-  param([string]$DistroName)
-
-  Invoke-Step "Checking Hermes ACP" {
-    $script = 'export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null 2>&1 && hermes acp --help >/dev/null'
-    Invoke-WslBash $DistroName $script
-    Write-Host "Hermes ACP is available."
-  }
-}
-
-Invoke-Step "Checking Windows platform features" {
-  Ensure-WindowsPlatform
-}
-
-Invoke-Step "Checking WSL runtime" {
-  Ensure-WslRuntime
-}
-
-Invoke-Step "Detecting Ubuntu WSL distro" {
-  $script:Distro = Ensure-UbuntuDistro
-  Write-Host "Using WSL distro: $script:Distro"
-}
-
-$env:HERMES_WSL_DISTRO = $Distro
-
-Invoke-Step "Checking WSL distro: $Distro" {
-  Invoke-WslBash $Distro "printf 'WSL: '; uname -sr"
-}
-
-Ensure-WslBasics $Distro
-Ensure-HermesInstalled $Distro
-Ensure-HermesModelConfigured $Distro
-Test-HermesAcp $Distro
-
-if ($repoRoot) {
-  Install-ModDependencies $repoRoot
-}
+# ---- Done ----
 
 Write-Host ""
-Write-Host "Hermes environment is ready. You can now launch Hermes Desktop Agent." -ForegroundColor Green
+Write-Host "============================================" -ForegroundColor Green
+Write-Host " Native Hermes setup completed!" -ForegroundColor Green
+Write-Host "============================================" -ForegroundColor Green
+Write-Host ""
+
+if ($script:HermesExe) {
+  Write-Host "All done! Hermes is ready to use." -ForegroundColor White
+  Write-Host ""
+  Write-Host "Next steps:" -ForegroundColor White
+  Write-Host "  1. Start Hermes Desktop: scripts\start-windows.ps1 -Backend native" -ForegroundColor Gray
+  Write-Host ""
+} else {
+  Write-Host "Next steps:" -ForegroundColor White
+  Write-Host "  1. Close and reopen your terminal (or restart PC)" -ForegroundColor Gray
+  Write-Host "  2. Re-run this script - it will skip install and go to model setup" -ForegroundColor Gray
+  Write-Host "  3. Start Hermes Desktop: scripts\start-windows.ps1 -Backend native" -ForegroundColor Gray
+  Write-Host ""
+}
