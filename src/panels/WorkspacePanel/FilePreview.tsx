@@ -8,7 +8,7 @@ export function FilePreview() {
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
 
   return (
-    <CollapsibleSection title="Preview" icon={<FileText className="h-4 w-4 text-cyan-200" />}>
+    <CollapsibleSection title="文件预览" icon={<FileText className="h-4 w-4 text-cyan-200" />}>
       {previewLoading ? (
         <div className="flex items-center gap-2 rounded-2xl border border-white/6 bg-slate-950/50 px-3 py-4 text-sm text-slate-300">
           <LoaderCircle className="h-4 w-4 animate-spin text-cyan-200" />

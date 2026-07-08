@@ -42,11 +42,9 @@ interface LoadedMod {
   exports?: ModExports
 }
 
-const MODS_DIR = path.join(process.cwd(), 'mods')
-
 function resolveModsRoot(custom?: string): string {
   if (custom && path.isAbsolute(custom)) return custom
-  return MODS_DIR
+  return process.env.HERMES_MODS_ROOT || path.join(process.cwd(), 'mods')
 }
 
 async function safeImport(filePath: string): Promise<unknown> {

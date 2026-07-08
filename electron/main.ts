@@ -1,12 +1,12 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, screen } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
 import { exec } from 'node:child_process'
-import { access, readFile, rename, rm, stat } from 'node:fs/promises'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { access, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HermesBridge, type HermesBridgeEvent, type HermesPermissionOption, type HermesPermissionOutcome, type HermesPermissionRequest } from './hermes-bridge.js'
-import { getBackendProvider, type BackendProvider } from './backend.js'
+import { getBackendProvider, type BackendProvider, type ProxyConfig } from './backend.js'
 import { sessionManager, type SessionInfo } from './session-manager.js'
 import { loadMod, reloadMod, scanModsDirectory } from './mod-loader.js'
 import { syncModBridge, drainTodoCommands, drainDisciplineCommands, type ModBridgeData } from './mod-bridge.js'
@@ -26,8 +26,6 @@ import {
   openPathWithDefaultApp,
   readWindowsClipboard,
   revealInExplorer,
-  runWslCommand,
-  windowsPathToWslPath,
   wslPathToUncPath,
   wslPathToWindowsPath,
   writeWindowsClipboard,
@@ -46,6 +44,8 @@ let isQuitting = false
 let workspaceRoot = process.cwd()
 let lastSessionId: string | undefined
 let currentSessionTitle: string | null = null
+let shutdownStarted = false
+let currentProxyConfig: ProxyConfig | null = null
 // Tracks the in-flight autoEnableMods() call. Mod IPC handlers and the data
 // each mod loads in onEnable() only exist once this resolves, so mods:scan
 // awaits it before returning — that way sidebar panels never render and fetch
@@ -55,7 +55,35 @@ let modsReadyPromise: Promise<void> | null = null
 type HermesConfigSnapshot = {
   provider: string
   model: string
+  baseUrl?: string
+  apiMode?: HermesApiMode
   source: string
+  providers?: Record<string, HermesProviderConfigSnapshot>
+}
+
+type HermesProviderConfigSnapshot = {
+  provider: string
+  baseUrl?: string
+  apiMode?: HermesApiMode
+  models?: Array<{ id: string; name: string; contextLength?: number }>
+  hasApiKey?: boolean
+}
+
+type HermesApiMode = 'chat_completions' | 'anthropic_messages' | 'codex_responses' | 'bedrock_converse'
+
+type HermesModelConfigRequest = {
+  provider?: string
+  model?: string
+  baseUrl?: string
+  apiMode?: HermesApiMode | string
+  apiKey?: string
+  models?: Array<{ id?: string; contextLength?: number }>
+}
+
+type HermesFetchModelsRequest = {
+  provider?: string
+  baseUrl?: string
+  apiKey?: string
 }
 
 type HermesSkillSnapshot = {
@@ -76,7 +104,12 @@ function createTray() {
     return
   }
 
-  tray = new Tray(getAppIconPath())
+  try {
+    tray = new Tray(getAppIconPath())
+  } catch (error) {
+    console.warn('[tray] failed to create tray icon:', error instanceof Error ? error.message : error)
+    return
+  }
   tray.setToolTip('Hermes 桌面助手')
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -189,7 +222,8 @@ async function createWindow() {
     }
 
     event.preventDefault()
-    mainWindow?.hide()
+    beginShutdown()
+    app.quit()
   })
 
   mainWindow.on('resize', () => {
@@ -269,6 +303,7 @@ if (!app.requestSingleInstanceLock()) {
 
 app.whenReady().then(async () => {
   await restoreWorkspaceRoot()
+  prepareModEnvironment()
   // Sync bridge workspace path before starting — prevents an unnecessary
   // stop/restart cycle if the persisted workspace differs from process.cwd().
   hermesBridge.initWorkspacePath(workspaceRoot)
@@ -339,7 +374,17 @@ app.on('window-all-closed', () => {
   }
 })
 
+app.on('before-quit', () => {
+  beginShutdown()
+})
+
 app.on('will-quit', () => {
+  beginShutdown()
+})
+
+function beginShutdown() {
+  if (shutdownStarted) return
+  shutdownStarted = true
   isQuitting = true
   globalShortcut.unregisterAll()
   if (_todoPollTimer) clearInterval(_todoPollTimer)
@@ -351,8 +396,12 @@ app.on('will-quit', () => {
     }
   }
   sessionManager.closeAll()
+  hermesBridge.stop()
+  if (todoWidgetWindow && !todoWidgetWindow.isDestroyed()) {
+    todoWidgetWindow.destroy()
+  }
   tray?.destroy()
-})
+}
 
 // MOD instance registry — stores full exports for enabled MODs
 const modInstances: Map<string, { exports: Record<string, unknown> }> = new Map()
@@ -454,7 +503,8 @@ function startTodoPolling() {
 }
 
 // Push the current todo list + SSH configs (incl. secrets) and skill docs into
-// WSL so the agent can read them. No-op when neither mod is enabled.
+// the native Hermes skills directory so the agent can read them. No-op when
+// neither mod is enabled.
 async function syncModBridgeNow(): Promise<void> {
   const hasTodo = modInstances.has('hermes-todo')
   const hasSsh = modInstances.has('hermes-ssh')
@@ -595,6 +645,7 @@ ipcMain.handle('hermes:rename-session', async (_event, sessionId: string, newTit
 })
 
 ipcMain.handle('proxy:set-config', async (_event, config) => {
+  currentProxyConfig = config
   getActiveBridge().setProxyConfig(config)
   return { ok: true }
 })
@@ -636,21 +687,6 @@ ipcMain.handle('proxy:detect-host', async () => {
     } catch { /* netsh not available or system proxy not set */ }
   }
 
-  // 3. For WSL backend, detect via WSL DNS resolver
-  if (backend.type === 'wsl') {
-    try {
-      const resolv = await runWslCommand(['bash', '-lc', "grep nameserver /etc/resolv.conf | head -1 | sed 's/.* //'"])
-      const ip = resolv.trim()
-      if (ip) return { host: ip }
-    } catch { /* fall through */ }
-
-    try {
-      const route = await runWslCommand(['bash', '-lc', "ip route show default | awk '{print $3}'"])
-      const ip = route.trim()
-      if (ip) return { host: ip }
-    } catch { /* fall through */ }
-  }
-
   return { host: '127.0.0.1' }
 })
 
@@ -664,13 +700,18 @@ ipcMain.handle('hermes:restart-backend', async () => {
 // --- Session (multi-tab) handlers ---
 
 ipcMain.handle('session:create', async (_event, name: string, cwd?: string) => {
-  const session = await sessionManager.createSession(name, cwd || workspaceRoot)
-  // Each session bridge needs its own permission handler, otherwise tool
-  // permission prompts in non-default tabs are silently auto-cancelled.
-  session.bridge.setPermissionHandler((payload) => requestHermesPermission(payload, session.id))
-  // Wire up event forwarding for this session's bridge
-  session.bridge.on('event', (event: HermesBridgeEvent) => {
-    mainWindow?.webContents.send('hermes:event', { ...event, sessionId: session.id } as HermesBridgeEvent & { sessionId: string })
+  const session = await sessionManager.createSession(name, cwd || workspaceRoot, {
+    configureBridge: (bridge, sessionId) => {
+      // Each session bridge needs its own permission handler, otherwise tool
+      // permission prompts in non-default tabs are silently auto-cancelled.
+      bridge.setPermissionHandler((payload) => requestHermesPermission(payload, sessionId))
+      bridge.setProxyConfig(currentProxyConfig)
+      // Wire up event forwarding before the ACP process starts so early stderr
+      // and initialization failures are visible in the correct tab.
+      bridge.on('event', (event: HermesBridgeEvent) => {
+        mainWindow?.webContents.send('hermes:event', { ...event, sessionId } as HermesBridgeEvent & { sessionId: string })
+      })
+    },
   })
   return { id: session.id, name: session.name, cwd: session.cwd }
 })
@@ -732,8 +773,8 @@ ipcMain.handle('hermes:hot-reload', async () => {
   }
 
   // 2. Re-scan mods directory
-  const mods = await scanModsDirectory()
-  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  const mods = await scanInstalledMods()
+  const enabledPath = getEnabledModsPath()
   let enabledList: string[] = []
   try { enabledList = JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { /* ok */ }
 
@@ -766,9 +807,9 @@ ipcMain.handle('mods:scan', async () => {
   if (modsReadyPromise) {
     try { await modsReadyPromise } catch { /* noop */ }
   }
-  const mods = await scanModsDirectory()
+  const mods = await scanInstalledMods()
   // Mark auto-enabled MODs
-  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  const enabledPath = getEnabledModsPath()
   let enabledList: string[] = []
   try { enabledList = JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { /* noop */ }
 
@@ -779,10 +820,10 @@ ipcMain.handle('mods:scan', async () => {
 })
 
 ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) => {
-  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  const enabledPath = getEnabledModsPath()
 
   if (enabled) {
-    const mod = await loadMod(path.join(process.cwd(), 'mods', modName))
+    const mod = await loadMod(resolveModDirectory(modName))
     if (mod.exports?.main?.ipcHandlers) {
       for (const [channel, handler] of Object.entries(mod.exports.main.ipcHandlers)) {
         const prefixedChannel = `mod:${modName}:${channel}`
@@ -799,7 +840,7 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
       const ctx = createModContext(modName, mod.path)
       mod.exports.onEnable(ctx)
     }
-    // Refresh the WSL bridge so a newly enabled todo/SSH mod is visible to agent.
+    // Refresh the mod bridge so a newly enabled todo/SSH mod is visible to agent.
     if (modName === 'hermes-todo' || modName === 'hermes-ssh' || modName === 'hermes-discipline') void syncModBridgeNow()
     // Start polling for agent-written todo commands if the todo mod was just enabled.
     if (modName === 'hermes-todo') startTodoPolling()
@@ -844,7 +885,13 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
 })
 
 ipcMain.handle('mods:uninstall', async (_event, modPath: string) => {
-  await rm(modPath, { recursive: true, force: true })
+  const modsRoot = path.resolve(getUserModsRoot())
+  const target = path.resolve(modPath)
+  if (target === modsRoot || !isPathInside(modsRoot, target)) {
+    return { ok: false, error: '只能卸载用户 MOD 目录内的扩展。' }
+  }
+
+  await rm(target, { recursive: true, force: true })
   return { ok: true }
 })
 
@@ -859,7 +906,7 @@ ipcMain.handle('mods:persona-switch', async (_event, personaId: string) => {
   if (!instance?.exports?.setActivePersona) return { ok: false }
   ;(instance.exports.setActivePersona as (id: string) => void)(personaId || '')
   // Save to mod config
-  const configPath = path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+  const configPath = getModConfigPath()
   try {
     const { readFileSync, writeFileSync } = await import('node:fs')
     const configs = (() => { try { return JSON.parse(readFileSync(configPath, 'utf8')) } catch { return {} } })()
@@ -1060,16 +1107,39 @@ ipcMain.handle('hermes:get-config', async () => {
   return readHermesConfigSnapshot()
 })
 
-ipcMain.handle('hermes:set-model-config', async (_event, config: { provider?: string; model?: string }) => {
+ipcMain.handle('hermes:set-model-config', async (_event, config: HermesModelConfigRequest) => {
   const backend = getBackendProvider()
   try {
-    if (config.provider) {
-      await backend.execCommand(['hermes', 'config', 'set', 'model.provider', config.provider])
-    }
-    if (config.model) {
-      await backend.execCommand(['hermes', 'config', 'set', 'model.default', config.model])
-    }
+    applyHermesModelConfig(backend, config)
     return { ok: true, config: await readHermesConfigSnapshot() }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:fetch-provider-models', async (_event, config: HermesFetchModelsRequest) => {
+  const backend = getBackendProvider()
+  try {
+    const models = await fetchProviderModels(backend, config)
+    return { ok: true, models }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:validate-model-config', async (_event, config: HermesModelConfigRequest) => {
+  const backend = getBackendProvider()
+  try {
+    const model = normalizeRequiredValue(config.model, 'Model ID')
+    const models = await fetchProviderModels(backend, config)
+    if (!models.some((item) => item.id === model)) {
+      return {
+        ok: false,
+        error: `接口可访问，但没有找到模型 ${model}`,
+        models,
+      }
+    }
+    return { ok: true, models }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
@@ -1081,20 +1151,11 @@ ipcMain.handle('hermes:get-api-keys', async () => {
   try {
     const raw = await readFile(configPath, 'utf8')
     const content = raw.replace(/\r\n/g, '\n')
-    // Find the providers block under model:
-    const providersBlock = content.match(/(^|\n)\s{2}providers:\n([\s\S]*?)(\n\S\s{0,1}\w|$)/)
-    const block = providersBlock?.[2] ?? ''
 
     const masked: Record<string, string | null> = {}
     for (const providerId of KNOWN_PROVIDER_IDS) {
-      const regex = new RegExp(`^\\s{4}${providerId}:\\n((?:\\s{6}[\\w-]+:.*\\n?)*)`, 'm')
-      const m = block.match(regex)
-      if (m) {
-        const keyMatch = m[1].match(/^\s{6}api_key:\s*(.+)$/m)
-        masked[providerId] = maskApiKey(keyMatch?.[1]?.trim() || null)
-      } else {
-        masked[providerId] = null
-      }
+      const providerEntry = findCustomProviderEntry(content, providerId)
+      masked[providerId] = maskApiKey(readProviderScalar(providerEntry ?? '', 'api_key'))
     }
     return { keys: masked }
   } catch {
@@ -1107,11 +1168,10 @@ ipcMain.handle('hermes:get-api-keys', async () => {
 ipcMain.handle('hermes:set-api-key', async (_event, config: { provider: string; apiKey: string }) => {
   const backend = getBackendProvider()
   try {
-    await backend.execCommand([
-      'hermes', 'config', 'set',
-      `model.providers.${config.provider}.api_key`,
-      config.apiKey,
-    ])
+    applyHermesModelConfig(backend, {
+      provider: config.provider,
+      apiKey: config.apiKey,
+    })
     return { ok: true }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -1119,10 +1179,10 @@ ipcMain.handle('hermes:set-api-key', async (_event, config: { provider: string; 
 })
 
 function createModContext(modName: string, modDir?: string) {
-  const configPath = path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+  const configPath = getModConfigPath()
   return {
     modName,
-    modDir: modDir || path.join(process.cwd(), 'mods', modName),
+    modDir: modDir || resolveModDirectory(modName),
     getConfig(key: string) {
       try {
         const raw = readFileSync(configPath, 'utf8')
@@ -1235,7 +1295,7 @@ ipcMain.handle('window:hide', async () => {
 })
 
 ipcMain.handle('window:close', async () => {
-  isQuitting = true
+  beginShutdown()
   app.quit()
   return { ok: true }
 })
@@ -1465,7 +1525,17 @@ function stringifyPermissionPayload(payload: unknown) {
 }
 
 function getAppIconPath() {
-  return path.join(app.getAppPath(), 'assets', 'icon.ico')
+  const assetDir = path.join(app.getAppPath(), 'assets')
+  const candidates = process.platform === 'win32'
+    ? ['icon.ico', 'icon.png']
+    : ['icon.png', 'icon-256.png', 'icon.ico']
+
+  for (const file of candidates) {
+    const candidate = path.join(assetDir, file)
+    if (existsSync(candidate)) return candidate
+  }
+
+  return path.join(assetDir, candidates[0])
 }
 
 async function selectDirectory(title: string, defaultPath: string) {
@@ -1498,7 +1568,7 @@ async function createWorkspaceSnapshot() {
     files: await readWorkspaceDirectory(workspaceRoot),
     tasks: [
       { id: 'task-layout', title: 'Desktop three-panel shell', done: true },
-      { id: 'task-bridge', title: 'WSL Hermes ACP bridge', done: true },
+      { id: 'task-bridge', title: 'Native Hermes ACP bridge', done: true },
       { id: 'task-workspace', title: 'Workspace file tree and preview', done: true },
       { id: 'task-windows', title: 'Windows native interop', done: windows.available },
       { id: 'task-acp-session', title: 'ACP historical session loading', done: true },
@@ -1543,8 +1613,71 @@ async function assertWorkspaceExists(hostPath: string) {
   await access(hostPath)
 }
 
+function getBundledModsRoot() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'mods')
+  }
+
+  return path.join(app.getAppPath(), 'mods')
+}
+
+function getUserModsRoot() {
+  const dir = path.join(getModStateDir(), 'installed')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function getModStateDir() {
+  const dir = path.join(app.getPath('userData'), 'mods')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function getEnabledModsPath() {
+  return path.join(getModStateDir(), '.hermes-mod-enabled.json')
+}
+
+function getModConfigPath() {
+  return path.join(getModStateDir(), '.hermes-mod-config.json')
+}
+
+function prepareModEnvironment() {
+  process.env.HERMES_MODS_ROOT = getBundledModsRoot()
+  process.env.HERMES_USER_MODS_ROOT = getUserModsRoot()
+  process.env.HERMES_MOD_CONFIG_PATH = getModConfigPath()
+}
+
+async function scanInstalledMods() {
+  const bundled = await scanModsDirectory(getBundledModsRoot())
+  const user = await scanModsDirectory(getUserModsRoot())
+  const byName = new Map<string, typeof bundled[number]>()
+
+  for (const mod of bundled) byName.set(mod.name, mod)
+  for (const mod of user) byName.set(mod.name, mod)
+
+  return [...byName.values()].sort((left, right) => left.name.localeCompare(right.name))
+}
+
+function resolveModDirectory(modName: string) {
+  const safeName = modName.trim()
+  if (!safeName || safeName.includes('/') || safeName.includes('\\') || safeName === '.' || safeName === '..') {
+    throw new Error('MOD name must be a single directory name.')
+  }
+
+  const candidates = [getUserModsRoot(), getBundledModsRoot()]
+  for (const root of candidates) {
+    const modDir = path.resolve(root, safeName)
+    if (!isPathInside(root, modDir)) continue
+    if (existsSync(modDir)) {
+      return modDir
+    }
+  }
+
+  throw new Error(`MOD not found: ${safeName}`)
+}
+
 async function autoEnableMods() {
-  const enabledPath = path.join(process.cwd(), 'mods', '.hermes-mod-enabled.json')
+  const enabledPath = getEnabledModsPath()
   let enabledList: string[] = []
   try { enabledList = JSON.parse(readFileSync(enabledPath, 'utf8')) } catch { return }
 
@@ -1552,7 +1685,7 @@ async function autoEnableMods() {
 
   for (const modName of enabledList) {
     try {
-      const mod = await loadMod(path.join(process.cwd(), 'mods', modName))
+      const mod = await loadMod(resolveModDirectory(modName))
       modInstances.set(modName, { exports: (mod.exports ?? {}) as Record<string, unknown> })
       if (mod.exports?.hooks) {
         modHooks.set(modName, mod.exports.hooks as { onUserMessage?: (text: string) => string })
@@ -1627,11 +1760,347 @@ function normalizeRenameTarget(nextName: string) {
  * Looks for "  key: value" lines inside the "model:" section.
  */
 function parseModelYamlKey(content: string, key: string): string {
-  // Find the model: block
   const modelBlock = content.match(/(^|\n)model:\n([\s\S]*?)(\n\S|$)/)
   const block = modelBlock?.[2] ?? ''
   const regex = new RegExp(`^\\s{2}${key}:\\s*(.+)$`, 'm')
-  return block.match(regex)?.[1]?.trim() ?? ''
+  return parseYamlScalar(block.match(regex)?.[1]?.trim() ?? '')
+}
+
+const VALID_API_MODES = new Set<HermesApiMode>([
+  'chat_completions',
+  'anthropic_messages',
+  'codex_responses',
+  'bedrock_converse',
+])
+
+function normalizeProviderName(provider?: string): string {
+  const value = (provider ?? '').trim()
+  if (!value) throw new Error('Provider 不能为空')
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('Provider 只能包含字母、数字、下划线和短横线')
+  }
+  return value
+}
+
+function normalizeRequiredValue(value: string | undefined, label: string): string {
+  const normalized = (value ?? '').trim()
+  if (!normalized) throw new Error(`${label} 不能为空`)
+  return normalized
+}
+
+function normalizeApiMode(value?: string): HermesApiMode {
+  return VALID_API_MODES.has(value as HermesApiMode) ? value as HermesApiMode : 'chat_completions'
+}
+
+function parseYamlScalar(raw: string | null | undefined): string {
+  const value = (raw ?? '').trim()
+  if (!value) return ''
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+function yamlString(value: string): string {
+  return JSON.stringify(value)
+}
+
+function readProviderScalar(entry: string, key: string): string {
+  const regex = new RegExp(`^\\s{4}${key}:\\s*(.+)$`, 'm')
+  return parseYamlScalar(entry.match(regex)?.[1])
+}
+
+function findRootBlock(content: string, key: string): { start: number; end: number; block: string } | null {
+  const normalized = content.replace(/\r\n/g, '\n')
+  const marker = `${key}:\n`
+  const start = normalized.indexOf(marker)
+  if (start < 0) return null
+  const afterMarker = start + marker.length
+  const nextRoot = normalized.slice(afterMarker).search(/\n\S/)
+  const end = nextRoot >= 0 ? afterMarker + nextRoot : normalized.length
+  return { start, end, block: normalized.slice(afterMarker, end) }
+}
+
+function splitCustomProviderEntries(block: string): string[] {
+  const lines = block.split('\n')
+  const entries: string[] = []
+  let current: string[] = []
+
+  for (const line of lines) {
+    if (/^\s{2}-\s/.test(line)) {
+      if (current.length > 0) entries.push(current.join('\n').replace(/\n?$/, '\n'))
+      current = [line]
+    } else if (current.length > 0) {
+      current.push(line)
+    }
+  }
+
+  if (current.length > 0) entries.push(current.join('\n').replace(/\n?$/, '\n'))
+  return entries
+}
+
+function readProviderName(entry: string): string {
+  const direct = entry.match(/^\s{2}-\s+name:\s*(.+)$/m)?.[1]
+  if (direct) return parseYamlScalar(direct)
+  return readProviderScalar(entry, 'name')
+}
+
+function findCustomProviderEntry(content: string, provider: string): string | null {
+  const customProviders = findRootBlock(content, 'custom_providers')
+  if (!customProviders) return null
+  return splitCustomProviderEntries(customProviders.block)
+    .find((entry) => readProviderName(entry) === provider) ?? null
+}
+
+function readProviderModels(entry: string): Array<{ id: string; name: string; contextLength?: number }> {
+  const lines = entry.split('\n')
+  const models: Array<{ id: string; name: string; contextLength?: number }> = []
+  let insideModels = false
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (/^\s{4}models:\s*$/.test(line)) {
+      insideModels = true
+      continue
+    }
+    if (insideModels && /^\s{4}\S/.test(line)) break
+    if (!insideModels) continue
+
+    const modelMatch = line.match(/^\s{6}(.+?):(?:\s*\{\})?\s*$/)
+    if (!modelMatch) continue
+
+    const id = parseYamlScalar(modelMatch[1])
+    if (!id) continue
+
+    let contextLength: number | undefined
+    const nextLine = lines[index + 1] ?? ''
+    const contextMatch = nextLine.match(/^\s{8}context_length:\s*(\d+)\s*$/)
+    if (contextMatch) contextLength = Number.parseInt(contextMatch[1], 10)
+
+    models.push({
+      id,
+      name: id,
+      ...(contextLength ? { contextLength } : {}),
+    })
+  }
+
+  return models
+}
+
+function readProviderConfigSnapshots(content: string): Record<string, HermesProviderConfigSnapshot> {
+  const customProviders = findRootBlock(content, 'custom_providers')
+  if (!customProviders) return {}
+
+  const configs: Record<string, HermesProviderConfigSnapshot> = {}
+  for (const entry of splitCustomProviderEntries(customProviders.block)) {
+    const provider = readProviderName(entry)
+    if (!provider) continue
+
+    const apiModeRaw = readProviderScalar(entry, 'api_mode')
+    configs[provider] = {
+      provider,
+      baseUrl: readProviderScalar(entry, 'base_url') || undefined,
+      apiMode: apiModeRaw ? normalizeApiMode(apiModeRaw) : undefined,
+      models: readProviderModels(entry),
+      hasApiKey: Boolean(readProviderScalar(entry, 'api_key')),
+    }
+  }
+
+  return configs
+}
+
+function buildCustomProviderEntry(config: {
+  provider: string
+  baseUrl: string
+  apiMode: HermesApiMode
+  apiKey?: string
+  models: Array<{ id: string; contextLength?: number }>
+}): string {
+  const lines = [
+    `  - name: ${yamlString(config.provider)}`,
+    `    base_url: ${yamlString(config.baseUrl)}`,
+  ]
+  if (config.apiKey) {
+    lines.push(`    api_key: ${yamlString(config.apiKey)}`)
+  }
+  lines.push(`    api_mode: ${yamlString(config.apiMode)}`)
+  if (config.models.length > 0) {
+    lines.push('    models:')
+    for (const model of config.models) {
+      if (model.contextLength && Number.isFinite(model.contextLength)) {
+        lines.push(`      ${yamlString(model.id)}:`)
+        lines.push(`        context_length: ${Math.trunc(model.contextLength)}`)
+      } else {
+        lines.push(`      ${yamlString(model.id)}: {}`)
+      }
+    }
+  }
+  return `${lines.join('\n')}\n`
+}
+
+function upsertModelBlock(content: string, provider: string, model: string): string {
+  const normalized = content.replace(/\r\n/g, '\n')
+  const block = findRootBlock(normalized, 'model')
+  const providerLine = `  provider: ${yamlString(provider)}`
+  const modelLine = `  default: ${yamlString(model)}`
+
+  if (!block) {
+    const prefix = normalized.trimEnd()
+    return `${prefix}${prefix ? '\n\n' : ''}model:\n${providerLine}\n${modelLine}\n`
+  }
+
+  const lines = block.block.split('\n').filter((line) => line.length > 0)
+  const rest = lines.filter((line) => !/^\s{2}(provider|default):/.test(line))
+  const replacement = `model:\n${providerLine}\n${modelLine}\n${rest.join('\n')}${rest.length ? '\n' : ''}`
+  return normalized.slice(0, block.start) + replacement + normalized.slice(block.end)
+}
+
+function upsertCustomProvider(content: string, entry: string, provider: string): string {
+  const normalized = content.replace(/\r\n/g, '\n')
+  const block = findRootBlock(normalized, 'custom_providers')
+  if (!block) {
+    const prefix = normalized.trimEnd()
+    return `${prefix}${prefix ? '\n\n' : ''}custom_providers:\n${entry}`
+  }
+
+  const entries = splitCustomProviderEntries(block.block)
+    .filter((item) => readProviderName(item) !== provider)
+  entries.push(entry)
+  const replacement = `custom_providers:\n${entries.join('')}`
+  return normalized.slice(0, block.start) + replacement + normalized.slice(block.end)
+}
+
+function applyHermesModelConfig(backend: BackendProvider, request: HermesModelConfigRequest) {
+  const configPath = path.join(backend.hermesHome, 'config.yaml')
+  const existingContent = existsSync(configPath) ? readFileSync(configPath, 'utf8').replace(/\r\n/g, '\n') : ''
+  const currentProvider = parseModelYamlKey(existingContent, 'provider')
+  const currentModel = parseModelYamlKey(existingContent, 'default')
+
+  const provider = normalizeProviderName(request.provider ?? currentProvider)
+  const model = normalizeRequiredValue(request.model ?? currentModel, 'Model ID')
+  const existingEntry = findCustomProviderEntry(existingContent, provider)
+  const baseUrl = normalizeRequiredValue(request.baseUrl ?? readProviderScalar(existingEntry ?? '', 'base_url'), 'Base URL')
+  const apiMode = normalizeApiMode(request.apiMode ?? readProviderScalar(existingEntry ?? '', 'api_mode'))
+  const nextApiKey = request.apiKey?.trim()
+  const existingApiKey = readProviderScalar(existingEntry ?? '', 'api_key')
+  const apiKey = nextApiKey || existingApiKey
+  const requestedModels = (request.models ?? [])
+    .map((item) => ({ id: (item.id ?? '').trim(), contextLength: item.contextLength }))
+    .filter((item) => Boolean(item.id))
+  const selectedModel = requestedModels.find((item) => item.id === model) ?? { id: model }
+  const models = [
+    selectedModel,
+    ...requestedModels.filter((item) => item.id !== model),
+  ]
+
+  const providerEntry = buildCustomProviderEntry({ provider, baseUrl, apiMode, apiKey, models })
+  let nextContent = upsertModelBlock(existingContent, provider, model)
+  nextContent = upsertCustomProvider(nextContent, providerEntry, provider)
+
+  mkdirSync(path.dirname(configPath), { recursive: true })
+  writeFileSync(configPath, nextContent)
+}
+
+async function fetchProviderModels(backend: BackendProvider, request: HermesFetchModelsRequest) {
+  const baseUrl = normalizeRequiredValue(request.baseUrl, 'Base URL')
+  const urls = buildModelListUrls(baseUrl)
+  const apiKey = getProviderFetchApiKey(backend, request)
+  let lastError = ''
+
+  for (const url of urls) {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 15000)
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+
+      if (!response.ok) {
+        lastError = `${response.status} ${response.statusText}`.trim()
+        continue
+      }
+
+      const payload = await response.json() as unknown
+      const models = parseModelsResponse(payload)
+      if (models.length === 0) {
+        throw new Error('接口返回成功，但没有发现模型列表')
+      }
+      return models
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  throw new Error(lastError || '无法获取模型列表')
+}
+
+function getProviderFetchApiKey(backend: BackendProvider, request: HermesFetchModelsRequest): string {
+  const direct = request.apiKey?.trim()
+  if (direct) return direct
+  const provider = request.provider?.trim()
+  if (!provider) return ''
+
+  const configPath = path.join(backend.hermesHome, 'config.yaml')
+  if (!existsSync(configPath)) return ''
+  const content = readFileSync(configPath, 'utf8').replace(/\r\n/g, '\n')
+  return readProviderScalar(findCustomProviderEntry(content, provider) ?? '', 'api_key')
+}
+
+function buildModelListUrls(baseUrl: string): string[] {
+  const normalized = baseUrl.trim().replace(/\/+$/, '')
+  const urls = [`${normalized}/models`]
+  if (!/\/v\d+(?:\/|$)/.test(normalized)) {
+    urls.push(`${normalized}/v1/models`)
+  }
+  return [...new Set(urls)]
+}
+
+function parseModelsResponse(payload: unknown): Array<{ id: string; name: string; contextLength?: number }> {
+  const records = getModelsArray(payload)
+  const byId = new Map<string, { id: string; name: string; contextLength?: number }>()
+
+  for (const record of records) {
+    if (!record || typeof record !== 'object') continue
+    const item = record as Record<string, unknown>
+    const id = typeof item.id === 'string'
+      ? item.id
+      : typeof item.name === 'string'
+        ? item.name
+        : ''
+    if (!id || byId.has(id)) continue
+
+    const displayName = typeof item.name === 'string' && item.name.trim() ? item.name : id
+    const contextLengthValue = item.context_length ?? item.contextLength ?? item.max_context_length
+    const contextLength = typeof contextLengthValue === 'number' && Number.isFinite(contextLengthValue)
+      ? Math.trunc(contextLengthValue)
+      : undefined
+
+    byId.set(id, {
+      id,
+      name: displayName,
+      ...(contextLength ? { contextLength } : {}),
+    })
+  }
+
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+function getModelsArray(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return []
+  const data = payload as Record<string, unknown>
+  if (Array.isArray(data.data)) return data.data
+  if (Array.isArray(data.models)) return data.models
+  if (data.data && typeof data.data === 'object' && Array.isArray((data.data as Record<string, unknown>).models)) {
+    return (data.data as Record<string, unknown>).models as unknown[]
+  }
+  return []
 }
 
 function maskApiKey(key: string | null): string | null {
@@ -1641,8 +2110,12 @@ function maskApiKey(key: string | null): string | null {
 }
 
 const KNOWN_PROVIDER_IDS = [
-  'anthropic', 'openai', 'deepseek', 'openrouter',
-  'google', 'groq', 'xai', 'nous', 'custom',
+  'openrouter', 'deepseek', 'bailian', 'bailian_coding', 'kimi',
+  'kimi_coding', 'zhipu_glm', 'zhipu_glm_en', 'stepfun', 'modelscope',
+  'longcat', 'minimax', 'minimax_en', 'bailing', 'siliconflow',
+  'siliconflow_en', 'together', 'nous', 'ark_agentplan', 'doubao_seed',
+  'aihubmix', 'therouter', 'novita', 'nvidia', 'xiaomi_mimo',
+  'anthropic', 'openai', 'google', 'xai', 'groq', 'custom',
 ]
 
 async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
@@ -1651,39 +2124,55 @@ async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
   try {
     const raw = await readFile(configPath, 'utf8')
     const content = raw.replace(/\r\n/g, '\n')
+    const provider = parseModelYamlKey(content, 'provider') || 'unknown'
+    const providerEntry = findCustomProviderEntry(content, provider)
+    const apiModeRaw = providerEntry ? readProviderScalar(providerEntry, 'api_mode') : ''
+    const providers = readProviderConfigSnapshots(content)
     return {
-      provider: parseModelYamlKey(content, 'provider') || 'unknown',
+      provider,
       model: parseModelYamlKey(content, 'default') || 'unknown',
+      baseUrl: readProviderScalar(providerEntry ?? '', 'base_url') || undefined,
+      apiMode: apiModeRaw ? normalizeApiMode(apiModeRaw) : undefined,
       source: configPath,
+      providers,
     }
   } catch {
     return {
       provider: '未知',
       model: '不可用',
       source: configPath,
+      providers: {},
     }
   }
 }
 
 async function readHermesSkillsSnapshot(): Promise<HermesSkillSnapshot[]> {
-  try {
-    const content = await runWslCommand([
-      'bash',
-      '-lc',
-      `find ~/.hermes/skills -mindepth 2 -maxdepth 2 -type d -not -name .git -not -path '*/.git/*' -printf "%P\\n" 2>/dev/null`,
-    ])
+  const backend = getBackendProvider()
+  const skillsRoot = path.join(backend.hermesHome, 'skills')
 
-    return content
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
+  try {
+    const categories = await readdir(skillsRoot, { withFileTypes: true })
+    const ids: string[] = []
+
+    for (const category of categories) {
+      if (!category.isDirectory() || category.name.startsWith('.')) continue
+      const categoryPath = path.join(skillsRoot, category.name)
+      const skills = await readdir(categoryPath, { withFileTypes: true }).catch(() => [])
+      for (const skill of skills) {
+        if (skill.isDirectory() && !skill.name.startsWith('.')) {
+          ids.push(`${category.name}/${skill.name}`)
+        }
+      }
+    }
+
+    return ids
       .map((id) => {
         const [category, name] = id.split('/')
         return {
           id,
           name: name ?? id,
           category: category ?? 'skills',
-          description: `来自 WSL ~/.hermes/skills/${category ?? ''} 分类的已安装 Hermes 技能。`,
+          description: `来自本机 Hermes skills/${category ?? ''} 分类的已安装技能。`,
           enabled: true,
         }
       })

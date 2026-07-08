@@ -203,6 +203,11 @@ export function windowsPathToWslPath(windowsPath: string) {
     }
   }
 
+  const rawDriveMatch = windowsPath.match(/^([A-Za-z]):[\\/](.*)$/)
+  if (rawDriveMatch) {
+    return `/mnt/${rawDriveMatch[1].toLowerCase()}/${rawDriveMatch[2].replace(/\\/g, '/')}`
+  }
+
   const normalized = path.resolve(windowsPath)
   const driveMatch = normalized.match(/^([A-Za-z]):\\(.*)$/)
   if (!driveMatch) {

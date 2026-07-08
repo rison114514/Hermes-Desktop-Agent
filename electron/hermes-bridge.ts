@@ -94,6 +94,7 @@ export class HermesBridge extends EventEmitter {
   private historyFlushTimer: NodeJS.Timeout | null = null
   private historyMaxTimeout: NodeJS.Timeout | null = null
   private stderrBuffer: string[] = []
+  private recentStderrLines: string[] = []
   private stderrFlushTimer: NodeJS.Timeout | null = null
   private workspacePath = process.cwd()
   private permissionHandler: HermesPermissionHandler | null = null
@@ -101,6 +102,7 @@ export class HermesBridge extends EventEmitter {
   private cachedCommands: HermesCommandInfo[] = []
   private proxyConfig: ProxyConfig | null = null
   private backend: BackendProvider | null = null
+  private stopGeneration = 0
 
   getWorkspacePath() {
     return this.workspacePath
@@ -302,19 +304,41 @@ export class HermesBridge extends EventEmitter {
   }
 
   stop() {
+    this.stopGeneration += 1
     this.clearHistoryReplay()
+    if (this.stderrFlushTimer) {
+      clearTimeout(this.stderrFlushTimer)
+      this.stderrFlushTimer = null
+    }
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeout)
       pending.reject(new Error('Hermes ACP backend stopped.'))
       this.pending.delete(id)
     }
 
-    this.process?.kill()
+    const child = this.process
+    if (child && !child.killed) {
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        // Process may already be gone.
+      }
+
+      const forceKillTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          try { child.kill('SIGKILL') } catch { /* noop */ }
+        }
+      }, 1500)
+      forceKillTimer.unref?.()
+    }
+
     this.process = null
     this.stdoutBuffer = ''
     this.sessionId = null
     this.startPromise = null
     this.activeMessageIds.clear()
+    this.promptInFlight = false
+    this.promptCancelRequested = false
   }
 
   private async ensureBackend() {
@@ -354,6 +378,8 @@ export class HermesBridge extends EventEmitter {
       return
     }
 
+    const startGeneration = this.stopGeneration
+
     if (!this.backend) {
       this.backend = getBackendProvider()
     }
@@ -372,7 +398,15 @@ export class HermesBridge extends EventEmitter {
       throw new Error(`Hermes is not available (${backendType} backend). ${detail}`)
     }
 
+    if (startGeneration !== this.stopGeneration) {
+      throw new Error('Hermes ACP backend stopped.')
+    }
+
     const child = await this.backend.spawnAcp(this.workspacePath, this.proxyConfig)
+    if (startGeneration !== this.stopGeneration) {
+      try { child.kill('SIGTERM') } catch { /* noop */ }
+      throw new Error('Hermes ACP backend stopped.')
+    }
     this.process = child
 
     this.emitEvent({
@@ -399,6 +433,10 @@ export class HermesBridge extends EventEmitter {
       if (lines.length === 0) return
 
       this.stderrBuffer.push(...lines)
+      this.recentStderrLines.push(...lines)
+      if (this.recentStderrLines.length > 20) {
+        this.recentStderrLines = this.recentStderrLines.slice(-20)
+      }
 
       if (this.stderrFlushTimer) {
         clearTimeout(this.stderrFlushTimer)
@@ -420,10 +458,15 @@ export class HermesBridge extends EventEmitter {
       this.sessionId = null
       this.startPromise = null
       this.activeMessageIds.clear()
+      this.flushStderr()
+      const recentStderr = this.recentStderrLines.join('\n').trim()
+      this.recentStderrLines = []
 
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timeout)
-        pending.reject(new Error(`Hermes ACP backend exited${code === null ? '' : ` with code ${code}`}.`))
+        pending.reject(new Error(
+          `Hermes ACP backend exited${code === null ? '' : ` with code ${code}`}.${recentStderr ? `\n${recentStderr}` : ''}`,
+        ))
         this.pending.delete(id)
       }
     })
@@ -557,7 +600,9 @@ export class HermesBridge extends EventEmitter {
     this.pending.delete(id)
 
     if (message.error) {
-      pending.reject(new Error(message.error.message ?? 'ACP request failed'))
+      const messageText = message.error.message ?? 'ACP request failed'
+      const detailText = extractErrorDetails(message.error.data)
+      pending.reject(new Error(detailText && detailText !== messageText ? `${messageText}\n${detailText}` : messageText))
       return
     }
 
@@ -1116,6 +1161,17 @@ function stringifyPreview(payload: unknown) {
   return text.length > HERMES_DIAGNOSTIC_PREVIEW_CHARS
     ? `${text.slice(0, HERMES_DIAGNOSTIC_PREVIEW_CHARS)}\n...[truncated ${text.length - HERMES_DIAGNOSTIC_PREVIEW_CHARS} chars]`
     : text
+}
+
+function extractErrorDetails(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object') {
+    return typeof data === 'string' ? data : undefined
+  }
+
+  const record = data as Record<string, unknown>
+  if (typeof record.details === 'string') return record.details
+  if (typeof record.detail === 'string') return record.detail
+  return stringifyMaybe(data)
 }
 
 const STATUS_LINE_PATTERNS = [

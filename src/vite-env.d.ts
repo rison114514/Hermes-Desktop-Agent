@@ -36,6 +36,40 @@ type DesktopHermesWorktree = {
   name: string
 }
 
+type DesktopHermesApiMode = 'chat_completions' | 'anthropic_messages' | 'codex_responses' | 'bedrock_converse'
+
+type DesktopHermesConfig = {
+  provider: string
+  model: string
+  baseUrl?: string
+  apiMode?: DesktopHermesApiMode
+  source: string
+  providers?: Record<string, DesktopHermesProviderConfig>
+}
+
+type DesktopHermesProviderConfig = {
+  provider: string
+  baseUrl?: string
+  apiMode?: DesktopHermesApiMode
+  models?: Array<{ id: string; name: string; contextLength?: number }>
+  hasApiKey?: boolean
+}
+
+type DesktopHermesModelConfigRequest = {
+  provider?: string
+  model?: string
+  baseUrl?: string
+  apiMode?: DesktopHermesApiMode
+  apiKey?: string
+  models?: Array<{ id: string; contextLength?: number }>
+}
+
+type DesktopHermesFetchModelsRequest = {
+  provider?: string
+  baseUrl: string
+  apiKey?: string
+}
+
 declare global {
   interface Window {
     hermesDesktop: {
@@ -68,11 +102,21 @@ declare global {
       selectWorkspaceDirectory: () => Promise<{ canceled: boolean; path?: string }>
       switchWorkspaceRoot: (workspacePath: string) => Promise<DesktopWorkspaceSnapshot>
       softSwitchWorkspace: (workspacePath: string) => Promise<DesktopWorkspaceSnapshot>
-      getHermesConfig: () => Promise<{ provider: string; model: string; source: string }>
-      setModelConfig: (config: { provider?: string; model?: string }) => Promise<{
+      getHermesConfig: () => Promise<DesktopHermesConfig>
+      setModelConfig: (config: DesktopHermesModelConfigRequest) => Promise<{
         ok: boolean
         error?: string
-        config?: { provider: string; model: string; source: string }
+        config?: DesktopHermesConfig
+      }>
+      fetchProviderModels: (config: DesktopHermesFetchModelsRequest) => Promise<{
+        ok: boolean
+        error?: string
+        models?: Array<{ id: string; name: string; contextLength?: number }>
+      }>
+      validateModelConfig: (config: DesktopHermesModelConfigRequest) => Promise<{
+        ok: boolean
+        error?: string
+        models?: Array<{ id: string; name: string; contextLength?: number }>
       }>
       getApiKeys: () => Promise<{ keys: Record<string, string | null> }>
       setApiKey: (config: { provider: string; apiKey: string }) => Promise<{ ok: boolean; error?: string }>

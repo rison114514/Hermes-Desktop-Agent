@@ -117,10 +117,10 @@ try {
 
 const bridge = new HermesBridge()
 const defaultPermissionOutcome = await bridge.resolvePermissionRequest({ options: [{ optionId: 'allow' }] })
-assert.deepEqual(defaultPermissionOutcome, { outcome: 'cancelled' })
-bridge.setPermissionHandler(() => ({ outcome: 'selected', optionId: 'allow-once' }))
+assert.deepEqual(defaultPermissionOutcome, { outcome: { outcome: 'cancelled' } })
+bridge.setPermissionHandler(() => ({ outcome: { outcome: 'selected', option_id: 'allow-once' } }))
 const selectedPermissionOutcome = await bridge.resolvePermissionRequest({})
-assert.deepEqual(selectedPermissionOutcome, { outcome: 'selected', optionId: 'allow-once' })
+assert.deepEqual(selectedPermissionOutcome, { outcome: { outcome: 'selected', option_id: 'allow-once' } })
 bridge.stop()
 
 console.log('Core verification passed.')

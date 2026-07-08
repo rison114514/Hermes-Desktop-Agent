@@ -4,7 +4,7 @@ import { SkillsPanel } from '@/panels/SkillsPanel'
 import { WorkspacePanel } from '@/panels/WorkspacePanel'
 import { TitleBar } from '@/components/TitleBar'
 import { useChatStore } from '@/store/chat'
-import { useSessionStore } from '@/store/sessions'
+import { getTabType, useSessionStore } from '@/store/sessions'
 import { useDesktopWindowStore } from '@/store/window'
 import { useSkillsStore } from '@/store/skills'
 import { useModelStore } from '@/store/model'
@@ -136,7 +136,11 @@ export default function App() {
       // store shared by all tabs. Only the active session may write to it, or a
       // background tab running a task would clobber the panel you're viewing.
       // On switch, switchSession re-fetches an authoritative snapshot anyway.
-      const activeSid = useSessionStore.getState().activeId
+      const sessionState = useSessionStore.getState()
+      const activeTab = sessionState.sessions.find((tab) => tab.id === sessionState.activeId)
+      const activeSid = getTabType(activeTab) === 'session'
+        ? sessionState.activeId
+        : useChatStore.getState().activeSessionId
       const isForActiveSession = !sid || !activeSid || sid === activeSid
 
       if (event.type === 'user:message') {

@@ -20,7 +20,7 @@ echo Starting Hermes Desktop with native Windows backend.
 echo.
 echo Prerequisites:
 echo   - Node.js 20+ and npm
-echo   - Hermes Agent (run setup-native.cmd first if not installed)
+echo   - Hermes Agent (run setup-hermes-environment.cmd first if not installed)
 echo.
 echo Press any key to start, or close this window to cancel.
 pause >/dev/null
@@ -32,11 +32,10 @@ if not "%EXIT_CODE%"=="0" (
   echo.
   echo Hermes Desktop failed to start. Exit code: %EXIT_CODE%
   echo.
-  echo Troubleshooting:
-  echo   1. Run setup-native.cmd to install Hermes Agent
-  echo   2. Verify Node.js is installed: node --version
-  echo   3. Verify npm dependencies: npm install
-  echo   4. For WSL mode: start-hermes-desktop.cmd -Backend wsl
+echo Troubleshooting:
+echo   1. Run setup-hermes-environment.cmd to install Hermes Agent
+echo   2. Verify Node.js is installed: node --version
+echo   3. Verify npm dependencies: npm install
   echo.
   echo Press any key to close this window.
   pause >/dev/null

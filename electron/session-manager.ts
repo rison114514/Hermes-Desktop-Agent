@@ -8,6 +8,10 @@ export interface SessionInfo {
   bridge: HermesBridge
 }
 
+type CreateSessionOptions = {
+  configureBridge?: (bridge: HermesBridge, sessionId: string) => void
+}
+
 class SessionManager {
   private sessions = new Map<string, SessionInfo>()
   private activeId: string | null = null
@@ -59,26 +63,17 @@ class SessionManager {
     return false
   }
 
-  async createSession(name: string, cwd?: string): Promise<SessionInfo> {
+  async createSession(name: string, cwd?: string, options?: CreateSessionOptions): Promise<SessionInfo> {
     const bridge = new HermesBridge()
-    if (cwd && bridge.getWorkspacePath() !== cwd) {
-      // set workspace path if provided
-      ;(bridge as any).workspacePath = cwd
-    }
-    // Generate a temporary id — the bridge will emit events once the
-    // real ACP session is established. Return immediately so the UI can
-    // switch to the new tab without blocking on process spawn.
+    // Generate a tab id immediately. The caller decides whether this tab should
+    // start a fresh ACP session or load an existing one; doing it here races
+    // with those explicit actions.
     const id = `session-${Date.now()}`
     const info: SessionInfo = { id, name, cwd: cwd ?? process.cwd(), title: null, bridge }
+    bridge.initWorkspacePath(info.cwd)
+    options?.configureBridge?.(bridge, id)
     this.sessions.set(id, info)
     if (!this.activeId) this.activeId = id
-
-    // Start the bridge in the background. When the ACP handshake completes
-    // the bridge emits events (including workspace snapshots), so the
-    // renderer tab receives content without any additional wiring.
-    bridge.start().catch((err) => {
-      console.warn('[session] bridge start failed for', id, ':', err instanceof Error ? err.message : err)
-    })
 
     return info
   }

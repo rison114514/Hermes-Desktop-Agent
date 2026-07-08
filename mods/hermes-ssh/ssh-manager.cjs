@@ -3,17 +3,20 @@ const { Client } = require('ssh2')
 const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('fs')
 const path = require('path')
 
-const MOD_CONFIG_PATH = path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+function getModConfigPath() {
+  return process.env.HERMES_MOD_CONFIG_PATH || path.join(process.cwd(), 'mods', '.hermes-mod-config.json')
+}
 
 function readModConfig() {
   try {
-    return JSON.parse(readFileSync(MOD_CONFIG_PATH, 'utf8'))
+    return JSON.parse(readFileSync(getModConfigPath(), 'utf8'))
   } catch {
     return {}
   }
 }
 
 function saveModConfig(allConfigs) {
+  const MOD_CONFIG_PATH = getModConfigPath()
   const dir = path.dirname(MOD_CONFIG_PATH)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   writeFileSync(MOD_CONFIG_PATH, JSON.stringify(allConfigs, null, 2), 'utf8')

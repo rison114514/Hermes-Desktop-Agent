@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Loader2, Plus, X } from 'lucide-react'
-import { useSessionStore } from '@/store/sessions'
+import { getTabType, useSessionStore } from '@/store/sessions'
 import type { SessionTab } from '@/store/sessions'
 import { useChatStore } from '@/store/chat'
 import { useWorkspaceStore } from '@/store/workspace'
@@ -35,7 +35,7 @@ export function TabBar() {
           const existing = useSessionStore.getState().sessions
           const merged = [
             ...list,
-            ...existing.filter((tab) => !list.some((s) => s.id === tab.id)),
+            ...existing.filter((tab) => getTabType(tab) !== 'session' || !list.some((s) => s.id === tab.id)),
           ]
           setSessions(merged)
           // Only force an active tab when nothing is selected yet.
@@ -62,15 +62,17 @@ export function TabBar() {
   const handleNew = () => {
     // Optimistic: create tab immediately
     const tempId = `new-${Date.now()}`
+    let createdSessionId: string | null = null
     const tempTab: SessionTab = { id: tempId, name: '新会话', cwd: '' }
     addSession(tempTab)
     setActiveChat(tempId)
     setInitializing((s) => new Set(s).add(tempId))
 
-    // Spawn backend in background
+    // Create the backend tab, switch to it, then start exactly one ACP session.
     window.hermesDesktop?.createSession?.(`会话 ${sessions.length + 1}`)
-      .then((session) => {
+      .then(async (session) => {
         if (session) {
+          createdSessionId = session.id
           // Replace temp tab with real session
           useSessionStore.setState((state) => ({
             sessions: state.sessions.map((s) =>
@@ -79,11 +81,16 @@ export function TabBar() {
             activeId: state.activeId === tempId ? session.id : state.activeId,
           }))
           setActiveChat(session.id)
+          const switchResult = await window.hermesDesktop?.switchSession?.(session.id)
+          if (switchResult?.snapshot) setSnapshot(switchResult.snapshot)
+          if (switchResult?.commands) setCommands(switchResult.commands)
+          const snapshot = await window.hermesDesktop?.newHermesSession?.()
+          if (snapshot) setSnapshot(snapshot)
           setInitializing((s) => { const n = new Set(s); n.delete(tempId); return n })
         }
       })
       .catch(() => {
-        removeSession(tempId)
+        removeSession(createdSessionId ?? tempId)
         setInitializing((s) => { const n = new Set(s); n.delete(tempId); return n })
       })
   }
@@ -91,14 +98,18 @@ export function TabBar() {
   const handleClose = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
     if (sessions.length <= 1) return
-    if (!window.hermesDesktop?.closeSession) return
-    await window.hermesDesktop.closeSession(id)
+    const tab = sessions.find((s) => s.id === id)
+    if (getTabType(tab) === 'session') {
+      if (!window.hermesDesktop?.closeSession) return
+      await window.hermesDesktop.closeSession(id)
+    }
     removeSession(id)
   }
 
   const handleClick = (s: SessionTab) => {
     if (initializing.has(s.id)) return
     setActive(s.id)
+    if (getTabType(s) !== 'session') return
     setActiveChat(s.id)
     // Switching tabs must also pull in the target session's workspace context
     // (file tree, cwd, slash commands), not just its chat history.
@@ -125,7 +136,7 @@ export function TabBar() {
                   : 'text-slate-500 hover:bg-white/5 hover:text-slate-300',
                 isInit && 'opacity-60',
               )}
-              title={isInit ? '正在启动...' : `${s.name} — ${s.cwd}`}
+              title={isInit ? '正在启动...' : getTabType(s) === 'session' ? `${s.name} — ${s.cwd}` : s.name}
             >
               {isInit ? (
                 <Loader2 className="h-3 w-3 animate-spin text-cyan-200" />

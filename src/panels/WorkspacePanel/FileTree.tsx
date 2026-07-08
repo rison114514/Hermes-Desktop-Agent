@@ -107,7 +107,7 @@ function TreeNode({
           className="mt-2 rounded-2xl border border-dashed border-white/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-500"
           style={{ marginLeft: `${12 + (depth + 1) * 14}px` }}
         >
-          Empty
+          空目录
         </div>
       ) : null}
     </div>
@@ -145,40 +145,40 @@ export function FileTree() {
     try {
       await action()
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Workspace action failed.')
+      setStatus(error instanceof Error ? error.message : '工作区操作失败。')
     }
   }
 
   const copyAbsolutePath = async (node: WorkspaceFileNode) => {
     const result = await window.hermesDesktop.getWorkspaceItemPaths(node.path)
     if (!result.ok || !result.path) {
-      throw new Error(result.error ?? 'Failed to resolve path.')
+      throw new Error(result.error ?? '解析路径失败。')
     }
 
     await window.hermesDesktop.writeWindowsClipboard(result.path)
-    setStatus('Copied absolute path.')
+    setStatus('已复制绝对路径。')
   }
 
   const renameItem = async (node: WorkspaceFileNode) => {
-    const nextName = window.prompt('Rename workspace item', node.name)
+    const nextName = window.prompt('重命名工作区项目', node.name)
     if (!nextName || nextName === node.name) {
       return
     }
 
     const result = await window.hermesDesktop.renameWorkspaceItem(node.path, nextName)
     if (!result.ok || !result.snapshot) {
-      throw new Error(result.error ?? 'Rename failed.')
+      throw new Error(result.error ?? '重命名失败。')
     }
 
     setSnapshot(result.snapshot)
     if (node.type === 'file' && result.path) {
       setSelectedFilePath(result.path)
     }
-    setStatus(`Renamed to ${nextName}.`)
+    setStatus(`已重命名为 ${nextName}。`)
   }
 
   return (
-    <CollapsibleSection title="Files" icon={<FolderTree className="h-4 w-4 text-cyan-200" />} className="relative">
+    <CollapsibleSection title="文件" icon={<FolderTree className="h-4 w-4 text-cyan-200" />} className="relative">
       <div className="space-y-2">
         {files.length ? (
           files.map((file) => <TreeNode key={file.path} node={file} onContextMenu={openContextMenu} />)
@@ -202,9 +202,9 @@ export function FileTree() {
             onClick={() => void runAction(async () => {
               const result = await window.hermesDesktop.revealWorkspaceItem(contextMenu.node.path)
               if (!result.ok) {
-                throw new Error(result.error ?? 'Reveal failed.')
+                throw new Error(result.error ?? '定位失败。')
               }
-              setStatus('Revealed in Explorer.')
+              setStatus('已在文件管理器中定位。')
             })}
           />
           <ContextMenuButton
@@ -213,9 +213,9 @@ export function FileTree() {
             onClick={() => void runAction(async () => {
               const result = await window.hermesDesktop.openWorkspaceItem(contextMenu.node.path)
               if (!result.ok) {
-                throw new Error(result.error ?? 'Open failed.')
+                throw new Error(result.error ?? '打开失败。')
               }
-              setStatus('Opened item.')
+              setStatus('已打开项目。')
             })}
           />
           <ContextMenuButton
@@ -233,7 +233,7 @@ export function FileTree() {
             label="复制相对路径"
             onClick={() => void runAction(async () => {
               await window.hermesDesktop.writeWindowsClipboard(contextMenu.node.path)
-              setStatus('Copied relative path.')
+              setStatus('已复制相对路径。')
             })}
           />
         </div>

@@ -53,7 +53,7 @@ export function WorkspacePanel() {
           </div>
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.3em] text-rose-200/70">工作区</p>
-            <h2 className="truncate text-lg font-semibold text-white">上下文与任务</h2>
+            <h2 className="truncate text-lg font-semibold text-white">上下文与文件</h2>
           </div>
         </div>
         <div className="flex items-center gap-1.5">

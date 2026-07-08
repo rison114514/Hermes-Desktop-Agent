@@ -3,7 +3,7 @@
   [switch]$AutoDetectDistro,
   [switch]$Build,
   [switch]$SkipBootstrap,
-  [ValidateSet('native', 'wsl')]
+  [ValidateSet('native')]
   [string]$Backend = 'native'
 )
 
@@ -666,6 +666,7 @@ echo "    OK: Approvals timeout set to 10 years (direct YAML)"
   # ---- Native Windows backend ----
   Invoke-Step "Checking native Hermes installation" {
     $hermesCmd = Get-Command "hermes" -ErrorAction SilentlyContinue
+    $hermesExe = $null
     if (-not $hermesCmd) {
       # Try known install locations before failing
       $candidates = @(
@@ -678,13 +679,21 @@ echo "    OK: Approvals timeout set to 10 years (direct YAML)"
       }
       if ($found) {
         $env:PATH = "$(Split-Path $found -Parent);$env:PATH"
+        $hermesExe = $found
         Write-Host "    OK: Hermes found at $found" -ForegroundColor Green
       } else {
-        throw "Hermes Agent is not installed. Run setup-native.cmd first, or install manually: pip install hermes-agent"
+        throw "Hermes Agent is not installed. Run setup-hermes-environment.cmd first, or install manually: pip install 'hermes-agent[acp]'"
       }
     } else {
+      $hermesExe = $hermesCmd.Source
       Write-Host "    OK: $(& hermes --version 2>&1)" -ForegroundColor Green
     }
+
+    & $hermesExe acp --check 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Hermes ACP dependencies are missing. Run setup-hermes-environment.cmd to repair the native Hermes installation."
+    }
+    Write-Host "    OK: Hermes ACP dependencies are installed" -ForegroundColor Green
   }
 
   # Hermes is fail-closed: it auto-denies a permission request once approvals.timeout

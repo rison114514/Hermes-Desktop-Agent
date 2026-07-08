@@ -85,6 +85,76 @@ function Resolve-HermesExe {
   return $null
 }
 
+function Resolve-HermesPython {
+  param([string]$HermesExe)
+
+  if ([string]::IsNullOrWhiteSpace($HermesExe)) {
+    return $null
+  }
+
+  $scriptsDir = Split-Path $HermesExe -Parent
+  $candidates = @(
+    (Join-Path $scriptsDir "python.exe"),
+    (Join-Path (Split-Path $scriptsDir -Parent) "python.exe")
+  )
+
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      try {
+        & $candidate --version 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $candidate }
+      } catch {}
+    }
+  }
+
+  return $null
+}
+
+function Test-HermesAcp {
+  param([string]$HermesExe)
+
+  if ([string]::IsNullOrWhiteSpace($HermesExe)) {
+    return $false
+  }
+
+  try {
+    & $HermesExe acp --check 2>&1 | Out-Null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Repair-HermesAcp {
+  param([string]$HermesExe)
+
+  $pythonExe = Resolve-HermesPython $HermesExe
+  if (-not $pythonExe) {
+    throw "Hermes ACP dependencies are missing, but the Python runtime for Hermes could not be found. Reinstall Hermes with setup-hermes-environment.cmd."
+  }
+
+  $indexes = @(
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
+    "https://mirrors.cloud.tencent.com/pypi/simple",
+    "https://pypi.doubanio.com/simple",
+    "https://pypi.org/simple"
+  )
+
+  foreach ($index in $indexes) {
+    $hostName = ([Uri]$index).Host
+    Write-Info "Trying pip index: $index"
+    & $pythonExe -m pip install --upgrade "hermes-agent[acp]" -i $index --trusted-host $hostName --timeout 90 --retries 3
+    if ($LASTEXITCODE -eq 0 -and (Test-HermesAcp $HermesExe)) {
+      Write-Ok "Hermes ACP dependencies installed"
+      return
+    }
+    Write-Warn "Failed with $index"
+  }
+
+  throw "Hermes ACP dependencies could not be installed. Try again later or run: `"$pythonExe`" -m pip install --upgrade `"hermes-agent[acp]`""
+}
+
 # ---- Header ----
 
 Write-Host "============================================" -ForegroundColor Magenta
@@ -197,6 +267,15 @@ if (-not $script:HermesExe) {
 # ---- Step 2: Setup model ----
 
 if ($script:HermesExe) {
+  Invoke-Step "Checking Hermes ACP dependencies" {
+    if (Test-HermesAcp $script:HermesExe) {
+      Write-Ok "Hermes ACP dependencies are installed"
+    } else {
+      Write-Warn "Hermes is installed, but ACP dependencies are missing; repairing"
+      Repair-HermesAcp $script:HermesExe
+    }
+  }
+
   Invoke-Step "Configuring AI model (hermes setup model)" {
     Write-Info "Launching interactive model setup..."
     Write-Host ""

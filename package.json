@@ -3,25 +3,24 @@
   "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "Windows desktop assistant for Hermes ACP.",
+  "description": "Cross-platform desktop assistant for Hermes ACP.",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "npm run dev:windows",
     "dev:windows": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron:windows\"",
-    "dev:wslg": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron:wslg\"",
     "dev:renderer": "vite",
     "dev:main": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
     "dev:electron:windows": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
-    "dev:electron:wslg": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 ./scripts/run-with-dbus.sh electron .",
+    "postinstall": "node scripts/ensure-electron-runtime.mjs",
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable zip",
+    "create:mac-launcher": "./scripts/create-macos-launcher.sh",
     "test:core": "npm run build:main && node scripts/verify-core.mjs",
     "preview": "vite preview",
     "electron:preview": "npm run electron:windows",
-    "electron:windows": "cross-env ELECTRON_IS_DEV=0 electron .",
-    "electron:wslg": "cross-env ELECTRON_IS_DEV=0 ./scripts/run-with-dbus.sh electron ."
+    "electron:windows": "cross-env ELECTRON_IS_DEV=0 electron ."
   },
   "build": {
     "appId": "com.hermes.desktop-agent",
@@ -32,8 +31,20 @@
     "files": [
       "dist/**",
       "dist-electron/**",
-      "assets/icon.ico",
+      "assets/icon.*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "mods",
+        "to": "mods",
+        "filter": [
+          "**/*",
+          "!**/node_modules/**",
+          "!**/.hermes-mod-config.json",
+          "!**/.hermes-mod-enabled.json"
+        ]
+      }
     ],
     "asar": true,
     "win": {
@@ -54,6 +65,19 @@
           ]
         }
       ]
+    },
+    "mac": {
+      "icon": "assets/icon.png",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
     }
   },
   "dependencies": {
@@ -64,6 +88,7 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "simple-git": "^3.36.0",
+    "ssh2": "^1.17.0",
     "tailwind-merge": "^3.3.1",
     "zustand": "^5.0.8"
   },

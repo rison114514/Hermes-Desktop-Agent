@@ -18,8 +18,11 @@ Thumbs.db
 .codex/
 .codex
 .worktrees/
+AppData/
 docs/
 .hermes/
+.hermes-test-home/
+.hermes-runtime/
 .hermes-tmp/
 .hermes-install-stamp
 .hermes-build-stamp

@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type ReactNode } from 'react'
+import { useState, type DragEvent, type MouseEvent, type ReactNode } from 'react'
 
 interface DraggableCardProps {
   id: string
@@ -8,8 +8,23 @@ interface DraggableCardProps {
 
 export function DraggableCard({ id, children, onMove }: DraggableCardProps) {
   const [dragOver, setDragOver] = useState(false)
+  const [canDrag, setCanDrag] = useState(true)
+
+  const isInteractiveTarget = (target: EventTarget | null) => {
+    return target instanceof HTMLElement && Boolean(target.closest(
+      'input, textarea, select, button, a, [contenteditable="true"], [data-no-card-drag]',
+    ))
+  }
+
+  const handleMouseDown = (e: MouseEvent<HTMLDivElement>) => {
+    setCanDrag(!isInteractiveTarget(e.target))
+  }
 
   const handleDragStart = (e: DragEvent<HTMLDivElement>) => {
+    if (isInteractiveTarget(e.target) || !canDrag) {
+      e.preventDefault()
+      return
+    }
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', id)
     ;(e.currentTarget as HTMLElement).style.opacity = '0.4'
@@ -41,7 +56,9 @@ export function DraggableCard({ id, children, onMove }: DraggableCardProps) {
 
   return (
     <div
-      draggable
+      draggable={canDrag}
+      onMouseDown={handleMouseDown}
+      onMouseUp={() => setCanDrag(true)}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}

@@ -1,4 +1,6 @@
 import { ChildProcessWithoutNullStreams, execFile, spawn } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import {
   createUtf8ProcessEnv,
@@ -76,14 +78,10 @@ export function getBackendType(): BackendType {
   if (_backendType) return _backendType
 
   const raw = (process.env.HERMES_BACKEND ?? 'native').trim().toLowerCase()
-  if (raw === 'wsl') {
-    _backendType = 'wsl'
-  } else if (raw === 'native') {
-    _backendType = 'native'
-  } else {
-    console.warn(`[backend] unknown HERMES_BACKEND="${raw}", falling back to native`)
-    _backendType = 'native'
+  if (raw && raw !== 'native') {
+    console.warn(`[backend] HERMES_BACKEND="${raw}" is deprecated; using native backend`)
   }
+  _backendType = 'native'
   return _backendType
 }
 
@@ -91,7 +89,7 @@ export function getBackendProvider(): BackendProvider {
   if (_backendProvider) return _backendProvider
 
   const type = getBackendType()
-  _backendProvider = type === 'wsl' ? new WslBackendProvider() : new NativeWindowsBackendProvider()
+  _backendProvider = type === 'wsl' ? new WslBackendProvider() : new NativeBackendProvider()
   return _backendProvider
 }
 
@@ -210,12 +208,12 @@ class WslBackendProvider implements BackendProvider {
 // Native Windows Backend
 // ============================================================================
 
-class NativeWindowsBackendProvider implements BackendProvider {
+class NativeBackendProvider implements BackendProvider {
   readonly type: BackendType = 'native'
   readonly hermesHome: string
 
   constructor() {
-    this.hermesHome = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? 'C:\\Users\\Default', 'AppData', 'Local'), 'hermes')
+    this.hermesHome = getNativeHermesHome()
   }
 
   async spawnAcp(
@@ -223,6 +221,7 @@ class NativeWindowsBackendProvider implements BackendProvider {
     proxyConfig: ProxyConfig | null,
   ): Promise<ChildProcessWithoutNullStreams> {
     const env: NodeJS.ProcessEnv = createUtf8ProcessEnv({ ...process.env })
+    applyHermesConfigEnvironment(env, this.hermesHome)
 
     if (proxyConfig?.enabled && proxyConfig.host && proxyConfig.port) {
       const protocol = proxyConfig.type === 'socks5' ? 'socks5' : 'http'
@@ -250,22 +249,37 @@ class NativeWindowsBackendProvider implements BackendProvider {
   }
 
   async ensureHermesInstalled(_proxyConfig: ProxyConfig | null): Promise<void> {
-    // Check if hermes is callable
+    // ACP is the runtime used by the desktop app. `hermes --version` can pass
+    // even when the optional ACP dependencies are missing.
     try {
-      await execFileAsync('hermes', ['--version'])
+      await execFileAsync('hermes', ['acp', '--check'])
       return
-    } catch {
-      // Not found — point user to setup-native script
-    }
+    } catch (error) {
+      try {
+        await execFileAsync('hermes', ['--version'])
+      } catch {
+        throw new Error(
+          'Hermes Agent is not installed on this system. ' +
+          'Run the setup script first:\n' +
+          '  Windows: double-click setup-hermes-environment.cmd\n' +
+          '  macOS: double-click setup-hermes-environment.command\n' +
+          'Or install manually:\n' +
+          '  pip install "hermes-agent[acp]"\n' +
+          'Then restart Hermes Desktop Agent.',
+        )
+      }
 
-    throw new Error(
-      'Hermes Agent is not installed on this Windows system. ' +
-      'Run the setup script first:\n' +
-      '  Double-click setup-native.cmd in the Hermes Desktop Agent folder\n' +
-      'Or install manually:\n' +
-      '  pip install hermes-agent\n' +
-      'Then restart Hermes Desktop Agent.',
-    )
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        'Hermes Agent is installed, but ACP dependencies are missing. ' +
+        'Run the setup script again to repair it:\n' +
+        '  Windows: double-click setup-hermes-environment.cmd\n' +
+        '  macOS: double-click setup-hermes-environment.command\n' +
+        'Manual fallback:\n' +
+        '  pip install "hermes-agent[acp]"\n' +
+        detail,
+      )
+    }
   }
 
   async execCommand(args: string[]): Promise<string> {
@@ -305,6 +319,136 @@ function getProxyExportLines(cfg: ProxyConfig | null): string[] {
     `export NO_PROXY="localhost,127.0.0.1,.local"`,
     `export no_proxy="localhost,127.0.0.1,.local"`,
   ]
+}
+
+function getNativeHermesHome() {
+  if (process.env.HERMES_HOME) {
+    return process.env.HERMES_HOME
+  }
+
+  if (process.platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? 'C:\\Users\\Default', 'AppData', 'Local'), 'hermes')
+  }
+
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'hermes')
+  }
+
+  return path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'hermes')
+}
+
+const PROVIDER_ENV_HINTS: Record<string, { apiKey: string; baseUrl?: string }> = {
+  openrouter: { apiKey: 'OPENROUTER_API_KEY', baseUrl: 'OPENROUTER_BASE_URL' },
+  openai: { apiKey: 'OPENAI_API_KEY', baseUrl: 'OPENAI_BASE_URL' },
+  anthropic: { apiKey: 'ANTHROPIC_API_KEY' },
+  deepseek: { apiKey: 'DEEPSEEK_API_KEY', baseUrl: 'DEEPSEEK_BASE_URL' },
+  bailian: { apiKey: 'DASHSCOPE_API_KEY', baseUrl: 'DASHSCOPE_BASE_URL' },
+  bailian_coding: { apiKey: 'DASHSCOPE_API_KEY', baseUrl: 'HERMES_QWEN_BASE_URL' },
+  kimi: { apiKey: 'KIMI_API_KEY', baseUrl: 'KIMI_BASE_URL' },
+  kimi_coding: { apiKey: 'KIMI_CODING_API_KEY' },
+  zhipu_glm: { apiKey: 'GLM_API_KEY', baseUrl: 'GLM_BASE_URL' },
+  zhipu_glm_en: { apiKey: 'ZAI_API_KEY', baseUrl: 'GLM_BASE_URL' },
+  stepfun: { apiKey: 'STEPFUN_API_KEY', baseUrl: 'STEPFUN_BASE_URL' },
+  modelscope: { apiKey: 'MODELSCOPE_API_KEY' },
+  longcat: { apiKey: 'LONGCAT_API_KEY' },
+  minimax: { apiKey: 'MINIMAX_API_KEY', baseUrl: 'MINIMAX_BASE_URL' },
+  minimax_en: { apiKey: 'MINIMAX_API_KEY', baseUrl: 'MINIMAX_BASE_URL' },
+  bailing: { apiKey: 'BAILING_API_KEY' },
+  siliconflow: { apiKey: 'SILICONFLOW_API_KEY' },
+  siliconflow_en: { apiKey: 'SILICONFLOW_API_KEY' },
+  together: { apiKey: 'TOGETHER_API_KEY' },
+  nous: { apiKey: 'NOUS_API_KEY' },
+  ark_agentplan: { apiKey: 'ARK_API_KEY' },
+  doubao_seed: { apiKey: 'ARK_API_KEY' },
+  aihubmix: { apiKey: 'AIHUBMIX_API_KEY' },
+  therouter: { apiKey: 'THEROUTER_API_KEY' },
+  novita: { apiKey: 'NOVITA_API_KEY', baseUrl: 'NOVITA_BASE_URL' },
+  nvidia: { apiKey: 'NVIDIA_API_KEY', baseUrl: 'NVIDIA_BASE_URL' },
+  xiaomi_mimo: { apiKey: 'XIAOMI_API_KEY', baseUrl: 'XIAOMI_BASE_URL' },
+  xai: { apiKey: 'XAI_API_KEY', baseUrl: 'XAI_BASE_URL' },
+  google: { apiKey: 'GOOGLE_API_KEY' },
+  groq: { apiKey: 'GROQ_API_KEY' },
+}
+
+function applyHermesConfigEnvironment(env: NodeJS.ProcessEnv, hermesHome: string) {
+  const configPath = path.join(hermesHome, 'config.yaml')
+  if (!existsSync(configPath)) return
+
+  const content = readFileSync(configPath, 'utf8').replace(/\r\n/g, '\n')
+  const provider = readModelScalar(content, 'provider')
+  if (!provider) return
+
+  const entry = findCustomProviderEntry(content, provider)
+  const apiKey = readProviderScalar(entry ?? '', 'api_key')
+  const baseUrl = readProviderScalar(entry ?? '', 'base_url')
+  const envHint = PROVIDER_ENV_HINTS[provider]
+
+  if (envHint) {
+    if (apiKey && !env[envHint.apiKey]) env[envHint.apiKey] = apiKey
+    if (baseUrl && envHint.baseUrl && !env[envHint.baseUrl]) env[envHint.baseUrl] = baseUrl
+    return
+  }
+
+  if (apiKey && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = apiKey
+  if (baseUrl && !env.OPENAI_BASE_URL) env.OPENAI_BASE_URL = baseUrl
+}
+
+function readModelScalar(content: string, key: string): string {
+  const block = content.match(/(^|\n)model:\n([\s\S]*?)(\n\S|$)/)?.[2] ?? ''
+  return parseYamlScalar(block.match(new RegExp(`^\\s{2}${key}:\\s*(.+)$`, 'm'))?.[1])
+}
+
+function findCustomProviderEntry(content: string, provider: string): string | null {
+  const block = findRootBlock(content, 'custom_providers')
+  if (!block) return null
+  return splitCustomProviderEntries(block)
+    .find((entry) => readProviderName(entry) === provider) ?? null
+}
+
+function findRootBlock(content: string, key: string): string | null {
+  const marker = `${key}:\n`
+  const start = content.indexOf(marker)
+  if (start < 0) return null
+  const afterMarker = start + marker.length
+  const nextRoot = content.slice(afterMarker).search(/\n\S/)
+  const end = nextRoot >= 0 ? afterMarker + nextRoot : content.length
+  return content.slice(afterMarker, end)
+}
+
+function splitCustomProviderEntries(block: string): string[] {
+  const lines = block.split('\n')
+  const entries: string[] = []
+  let current: string[] = []
+
+  for (const line of lines) {
+    if (/^\s{2}-\s/.test(line)) {
+      if (current.length > 0) entries.push(current.join('\n').replace(/\n?$/, '\n'))
+      current = [line]
+    } else if (current.length > 0) {
+      current.push(line)
+    }
+  }
+
+  if (current.length > 0) entries.push(current.join('\n').replace(/\n?$/, '\n'))
+  return entries
+}
+
+function readProviderName(entry: string): string {
+  const direct = entry.match(/^\s{2}-\s+name:\s*(.+)$/m)?.[1]
+  return direct ? parseYamlScalar(direct) : readProviderScalar(entry, 'name')
+}
+
+function readProviderScalar(entry: string, key: string): string {
+  return parseYamlScalar(entry.match(new RegExp(`^\\s{4}${key}:\\s*(.+)$`, 'm'))?.[1])
+}
+
+function parseYamlScalar(raw: string | null | undefined): string {
+  const value = (raw ?? '').trim()
+  if (!value) return ''
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1)
+  }
+  return value
 }
 
 /**

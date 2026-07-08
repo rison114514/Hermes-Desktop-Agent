@@ -1,6 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HermesBridgeEvent } from './hermes-bridge.js'
 
+type HermesApiMode = 'chat_completions' | 'anthropic_messages' | 'codex_responses' | 'bedrock_converse'
+
+type HermesModelConfigRequest = {
+  provider?: string
+  model?: string
+  baseUrl?: string
+  apiMode?: HermesApiMode
+  apiKey?: string
+  models?: Array<{ id: string; contextLength?: number }>
+}
+
+type HermesFetchModelsRequest = {
+  provider?: string
+  baseUrl: string
+  apiKey?: string
+}
+
 const api = {
   sendMessage: (message: string, sessionId?: string) =>
     ipcRenderer.invoke('hermes:send-message', message, sessionId),
@@ -36,7 +53,11 @@ const api = {
   getWorkspaceItemPaths: (itemPath: string) => ipcRenderer.invoke('workspace:get-item-paths', itemPath),
   renameWorkspaceItem: (itemPath: string, nextName: string) => ipcRenderer.invoke('workspace:rename-item', itemPath, nextName),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
-  setModelConfig: (config: { provider?: string; model?: string }) => ipcRenderer.invoke('hermes:set-model-config', config),
+  setModelConfig: (config: HermesModelConfigRequest) => ipcRenderer.invoke('hermes:set-model-config', config),
+  fetchProviderModels: (config: HermesFetchModelsRequest) => ipcRenderer.invoke('hermes:fetch-provider-models', config),
+  validateModelConfig: (config: HermesModelConfigRequest) => ipcRenderer.invoke('hermes:validate-model-config', config),
+  getApiKeys: () => ipcRenderer.invoke('hermes:get-api-keys'),
+  setApiKey: (config: { provider: string; apiKey: string }) => ipcRenderer.invoke('hermes:set-api-key', config),
   getHermesSkills: () => ipcRenderer.invoke('hermes:get-skills'),
   getHermesCommands: () => ipcRenderer.invoke('hermes:get-commands'),
   readWorkspaceFile: (filePath: string) => ipcRenderer.invoke('workspace:read-file', filePath),
