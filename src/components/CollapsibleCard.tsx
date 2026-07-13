@@ -34,9 +34,13 @@ export function CollapsibleCard({
   }
 
   return (
-    <div className="group/card rounded-2xl border border-white/[0.07] bg-white/[0.03] transition-all duration-200 hover:border-white/[0.12]">
+    <div
+      data-card-open={open ? 'true' : 'false'}
+      className="group/card rounded-2xl border border-white/[0.07] bg-white/[0.03] transition-all duration-200 hover:border-white/[0.12]"
+    >
       <button
         type="button"
+        data-card-toggle
         onClick={toggle}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
       >

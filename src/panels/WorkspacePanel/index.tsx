@@ -1,15 +1,22 @@
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight, LayoutPanelTop, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, LayoutPanelTop, MonitorPlay, RefreshCw } from 'lucide-react'
 import { FilePreview } from './FilePreview'
 import { FileTree } from './FileTree'
 import { SessionInfo } from './SessionInfo'
 import { useWorkspaceStore } from '@/store/workspace'
+import { useSessionStore } from '@/store/sessions'
 
-export function WorkspacePanel() {
+type WorkspacePanelProps = {
+  width?: number
+}
+
+export function WorkspacePanel({ width = 384 }: WorkspacePanelProps) {
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
   const setPreview = useWorkspaceStore((state) => state.setPreview)
   const setPreviewLoading = useWorkspaceStore((state) => state.setPreviewLoading)
+  const cwd = useWorkspaceStore((state) => state.cwd)
+  const openTab = useSessionStore((state) => state.openTab)
   const [refreshing, setRefreshing] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
 
@@ -45,7 +52,10 @@ export function WorkspacePanel() {
   }
 
   return (
-    <aside className="flex w-[24rem] shrink-0 flex-col border-l border-white/10 bg-[var(--gradient-workspace)] px-5 py-5">
+    <aside
+      className="flex shrink-0 flex-col border-l border-white/10 bg-[var(--gradient-workspace)] px-5 py-5"
+      style={{ width }}
+    >
       <div className="mb-6 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-3xl bg-rose-300/15 text-rose-200">
@@ -57,6 +67,23 @@ export function WorkspacePanel() {
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => openTab({
+              id: `normal:project-preview:${cwd}`,
+              kind: 'normal',
+              pageId: 'project-preview',
+              name: '项目预览',
+              cwd,
+              payload: { workspacePath: cwd },
+            })}
+            disabled={!cwd}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-200 transition enabled:hover:border-cyan-200/30 enabled:hover:bg-cyan-200/10 disabled:text-slate-600"
+            title="预览项目"
+            aria-label="预览项目"
+          >
+            <MonitorPlay className="h-3.5 w-3.5" />
+          </button>
           <button
             type="button"
             onClick={() => void handleRefresh()}

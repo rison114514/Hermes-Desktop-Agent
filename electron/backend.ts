@@ -211,9 +211,11 @@ class WslBackendProvider implements BackendProvider {
 class NativeBackendProvider implements BackendProvider {
   readonly type: BackendType = 'native'
   readonly hermesHome: string
+  private readonly hermesExecutable: string
 
   constructor() {
     this.hermesHome = getNativeHermesHome()
+    this.hermesExecutable = getNativeHermesExecutable()
   }
 
   async spawnAcp(
@@ -222,6 +224,10 @@ class NativeBackendProvider implements BackendProvider {
   ): Promise<ChildProcessWithoutNullStreams> {
     const env: NodeJS.ProcessEnv = createUtf8ProcessEnv({ ...process.env })
     applyHermesConfigEnvironment(env, this.hermesHome)
+    const desktopPythonPath = process.env.HERMES_DESKTOP_PYTHONPATH
+    if (desktopPythonPath && existsSync(desktopPythonPath)) {
+      env.PYTHONPATH = [desktopPythonPath, env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+    }
 
     if (proxyConfig?.enabled && proxyConfig.host && proxyConfig.port) {
       const protocol = proxyConfig.type === 'socks5' ? 'socks5' : 'http'
@@ -236,7 +242,7 @@ class NativeBackendProvider implements BackendProvider {
       env.no_proxy = 'localhost,127.0.0.1,.local'
     }
 
-    return spawn('hermes', ['acp', '--accept-hooks'], {
+    return spawn(this.hermesExecutable, ['acp', '--accept-hooks'], {
       cwd: workspacePath,
       stdio: 'pipe',
       windowsHide: true,
@@ -252,11 +258,11 @@ class NativeBackendProvider implements BackendProvider {
     // ACP is the runtime used by the desktop app. `hermes --version` can pass
     // even when the optional ACP dependencies are missing.
     try {
-      await execFileAsync('hermes', ['acp', '--check'])
+      await execFileAsync(this.hermesExecutable, ['acp', '--check'])
       return
     } catch (error) {
       try {
-        await execFileAsync('hermes', ['--version'])
+        await execFileAsync(this.hermesExecutable, ['--version'])
       } catch {
         throw new Error(
           'Hermes Agent is not installed on this system. ' +
@@ -283,7 +289,7 @@ class NativeBackendProvider implements BackendProvider {
   }
 
   async execCommand(args: string[]): Promise<string> {
-    return execFileAsync('hermes', args)
+    return execFileAsync(this.hermesExecutable, args)
   }
 
   async gitAvailable(): Promise<boolean> {
@@ -335,6 +341,25 @@ function getNativeHermesHome() {
   }
 
   return path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'hermes')
+}
+
+function getNativeHermesExecutable() {
+  if (process.env.HERMES_EXECUTABLE) {
+    return process.env.HERMES_EXECUTABLE
+  }
+
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA
+      ?? path.join(process.env.USERPROFILE ?? 'C:\\Users\\Default', 'AppData', 'Local')
+    const candidates = [
+      path.join(localAppData, 'hermes', 'venv', 'Scripts', 'hermes.exe'),
+      path.join(localAppData, 'hermes', 'hermes-agent', 'venv', 'Scripts', 'hermes.exe'),
+    ]
+    const installed = candidates.find((candidate) => existsSync(candidate))
+    if (installed) return installed
+  }
+
+  return 'hermes'
 }
 
 const PROVIDER_ENV_HINTS: Record<string, { apiKey: string; baseUrl?: string }> = {

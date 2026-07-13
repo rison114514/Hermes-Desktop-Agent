@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
-import { PackageOpen, RefreshCw, Trash2 } from 'lucide-react'
+import { ExternalLink, PackageOpen, RefreshCw, Trash2 } from 'lucide-react'
 import { useModsStore } from '@/store/mods'
 import type { LoadedMod } from '@/store/mods'
 import { SSHPanel } from '@/components/SSHPanel'
 import { TodoPanel } from '@/components/TodoPanel'
 import { DisciplinePanel } from '@/components/DisciplinePanel'
+import { useSessionStore } from '@/store/sessions'
 
 export function ModPanel() {
   const mods = useModsStore((state) => state.mods)
   const toggleMod = useModsStore((state) => state.toggleMod)
   const removeMod = useModsStore((state) => state.removeMod)
+  const openTab = useSessionStore((state) => state.openTab)
   const [scanning, setScanning] = useState(false)
 
   // Auto-scan on mount
@@ -40,6 +42,19 @@ export function ModPanel() {
     if (!window.hermesDesktop?.uninstallMod) return
     await window.hermesDesktop.uninstallMod(mod.path)
     removeMod(mod.name)
+  }
+
+  const openModTab = (mod: LoadedMod, tab: { id: string; title: string; rendererType: string; icon?: string; payload?: Record<string, unknown> }) => {
+    openTab({
+      id: `mod:${mod.name}:${tab.id}`,
+      kind: 'mod',
+      modName: mod.name,
+      rendererType: tab.rendererType,
+      name: tab.title,
+      icon: tab.icon,
+      payload: tab.payload,
+      closable: true,
+    })
   }
 
   const enabledCount = mods.filter((m) => m.enabled).length
@@ -118,6 +133,21 @@ export function ModPanel() {
                   {mod.error}
                 </p>
               ) : null}
+              {mod.enabled && mod.exports?.tabs?.length ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {mod.exports.tabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => openModTab(mod, tab)}
+                      className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-cyan-300/30 hover:text-cyan-100"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      {tab.title}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))
         )}
@@ -170,6 +200,7 @@ export function ModSidebarPanels() {
 
 function PersonaListPanel({ title, emptyText }: { modName: string; title: string; emptyText: string }) {
   const [personas, setPersonas] = useState<Array<{ id: string; name: string; icon: string; description: string; active: boolean }>>([])
+  const openTab = useSessionStore((state) => state.openTab)
 
   // Re-fetch on mount and whenever the backend signals MODs are ready, so the
   // active persona loads even if this panel mounted before the mod IPC handlers
@@ -193,6 +224,18 @@ function PersonaListPanel({ title, emptyText }: { modName: string; title: string
     await refreshList()
   }
 
+  const openPersonaDetail = (persona: { id: string; name: string }) => {
+    openTab({
+      id: `mod:hermes-persona:persona-editor:${persona.id}`,
+      kind: 'mod',
+      modName: 'hermes-persona',
+      rendererType: 'persona-editor',
+      name: `人格 · ${persona.name}`,
+      payload: { personaId: persona.id },
+      closable: true,
+    })
+  }
+
   return (
     <div className="mt-3 rounded-[28px] border border-white/10 bg-white/5 p-4">
       <p className="text-xs uppercase tracking-[0.28em] text-slate-400">{title}</p>
@@ -201,10 +244,8 @@ function PersonaListPanel({ title, emptyText }: { modName: string; title: string
           <p className="py-3 text-center text-xs text-slate-500">{emptyText}</p>
         ) : (
           personas.map((p) => (
-            <button
+            <div
               key={p.id}
-              type="button"
-              onClick={() => void handleSwitch(p.active ? '' : p.id)}
               className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
                 p.active
                   ? 'border-amber-300/30 bg-amber-300/12'
@@ -214,14 +255,26 @@ function PersonaListPanel({ title, emptyText }: { modName: string; title: string
               <div className="flex items-center gap-2">
                 <span className="text-base">{iconEmoji(p.icon)}</span>
                 <div className="min-w-0 flex-1">
-                  <p className={`text-sm font-medium ${p.active ? 'text-amber-100' : 'text-slate-100'}`}>
+                  <button
+                    type="button"
+                    onClick={() => void handleSwitch(p.active ? '' : p.id)}
+                    className={`block text-left text-sm font-medium ${p.active ? 'text-amber-100' : 'text-slate-100'}`}
+                  >
                     {p.name}
                     {p.active ? <span className="ml-1.5 text-[11px] text-amber-200/70">当前</span> : null}
-                  </p>
+                  </button>
                   <p className="mt-0.5 text-[11px] leading-4 text-slate-500">{p.description}</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => openPersonaDetail(p)}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-white/10 text-slate-500 transition hover:text-fuchsia-200"
+                  title="打开详情"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </button>
               </div>
-            </button>
+            </div>
           ))
         )}
       </div>

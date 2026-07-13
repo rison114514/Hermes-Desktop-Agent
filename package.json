@@ -15,7 +15,7 @@
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
-    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable zip",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable zip --x64",
     "create:mac-launcher": "./scripts/create-macos-launcher.sh",
     "test:core": "npm run build:main && node scripts/verify-core.mjs",
     "preview": "vite preview",
@@ -28,10 +28,13 @@
     "directories": {
       "output": "release-build"
     },
+    "npmRebuild": false,
     "files": [
       "dist/**",
       "dist-electron/**",
       "assets/icon.*",
+      "!node_modules/cpu-features/**",
+      "!node_modules/ssh2/lib/protocol/crypto/build/**",
       "package.json"
     ],
     "extraResources": [
@@ -43,6 +46,15 @@
           "!**/node_modules/**",
           "!**/.hermes-mod-config.json",
           "!**/.hermes-mod-enabled.json"
+        ]
+      },
+      {
+        "from": "runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
       }
     ],

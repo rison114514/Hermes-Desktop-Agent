@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Cable, ChevronLeft, ChevronRight, Globe, History, MessageSquarePlus, Puzzle, Wrench } from 'lucide-react'
+import { Cable, ChevronLeft, ChevronRight, ExternalLink, Globe, History, MessageSquarePlus, Puzzle, Wrench } from 'lucide-react'
 import { SkillList } from './SkillList'
 import { ModelConfig } from './ModelConfig'
 import { ProxyConfig } from './ProxyConfig'
@@ -77,6 +77,7 @@ const CARDS: Record<string, React.FC> = {
 function PersonaListPanelInline({ modName, emptyText }: { modName: string; emptyText: string }) {
   const [personas, setPersonas] = useState<Array<{ id: string; name: string; icon: string; description: string; active: boolean }>>([])
   const modsReadyNonce = useModsStore((s) => s.modsReadyNonce)
+  const openTab = useSessionStore((state) => state.openTab)
 
   useEffect(() => {
     if (!window.hermesDesktop?.personaList) return
@@ -89,16 +90,26 @@ function PersonaListPanelInline({ modName, emptyText }: { modName: string; empty
     window.hermesDesktop.personaList().then(setPersonas).catch(() => { /* noop */ })
   }
 
+  const openPersonaDetail = (persona: { id: string; name: string }) => {
+    openTab({
+      id: `mod:hermes-persona:persona-editor:${persona.id}`,
+      kind: 'mod',
+      modName,
+      rendererType: 'persona-editor',
+      name: `人格 · ${persona.name}`,
+      payload: { personaId: persona.id },
+      closable: true,
+    })
+  }
+
   return (
     <div className="space-y-2">
       {personas.length === 0 ? (
         <p className="py-3 text-center text-xs text-slate-500">{emptyText}</p>
       ) : (
         personas.map((p) => (
-          <button
+          <div
             key={p.id}
-            type="button"
-            onClick={() => void handleSwitch(p.active ? '' : p.id)}
             className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
               p.active
                 ? 'border-amber-300/30 bg-amber-300/12'
@@ -108,14 +119,26 @@ function PersonaListPanelInline({ modName, emptyText }: { modName: string; empty
             <div className="flex items-center gap-2">
               <span className="text-base">{iconEmojiForPersona(p.icon)}</span>
               <div className="min-w-0 flex-1">
-                <p className={`text-sm font-medium ${p.active ? 'text-amber-100' : 'text-slate-100'}`}>
+                <button
+                  type="button"
+                  onClick={() => void handleSwitch(p.active ? '' : p.id)}
+                  className={`block text-left text-sm font-medium ${p.active ? 'text-amber-100' : 'text-slate-100'}`}
+                >
                   {p.name}
                   {p.active ? <span className="ml-1.5 text-[11px] text-amber-200/70">当前</span> : null}
-                </p>
+                </button>
                 <p className="mt-0.5 text-[11px] leading-4 text-slate-500">{p.description}</p>
               </div>
+              <button
+                type="button"
+                onClick={() => openPersonaDetail(p)}
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-white/10 text-slate-500 transition hover:text-fuchsia-200"
+                title="打开详情"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </button>
             </div>
-          </button>
+          </div>
         ))
       )}
     </div>
@@ -172,7 +195,11 @@ function renderModPanelCard(modName: string): React.FC {
   }
 }
 
-export function SkillsPanel() {
+type SkillsPanelProps = {
+  width?: number
+}
+
+export function SkillsPanel({ width = 320 }: SkillsPanelProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [startingSession, setStartingSession] = useState(false)
   const order = useSidebarStore((state) => state.order)
@@ -180,6 +207,8 @@ export function SkillsPanel() {
   const setOrder = useSidebarStore((state) => state.setOrder)
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const resetForSession = useChatStore((state) => state.resetForSession)
+  const setActiveSession = useChatStore((state) => state.setActiveSession)
+  const moveSessionMessages = useChatStore((state) => state.moveSessionMessages)
   const mods = useModsStore((state) => state.mods)
 
   // Auto-register enabled MOD panel cards in the sidebar order
@@ -188,14 +217,14 @@ export function SkillsPanel() {
       .filter((m) => m.enabled && m.exports?.panels?.sidebar)
       .map((m) => `mod-panel-${m.name}`),
   [mods])
-  useMemo(() => {
+  useEffect(() => {
     let changed = false
     const next = [...order]
     for (const id of modPanelIds) {
       if (!next.includes(id)) { next.push(id); changed = true }
     }
     if (changed) setOrder(next)
-  }, [modPanelIds])
+  }, [modPanelIds, order, setOrder])
 
   // Dynamic CARDS that includes MOD panel cards alongside static cards
   const allCards = useMemo(() => {
@@ -212,28 +241,26 @@ export function SkillsPanel() {
     if (!window.hermesDesktop) return
     setStartingSession(true)
 
-    // Create optimistic tab immediately — user sees it appear instantly
     const tempId = `new-${Date.now()}`
     const sid = useSessionStore.getState()
-    sid.addSession({ id: tempId, name: '新会话', cwd: '' })
-    sid.setActive(tempId)
+    sid.openTab({ id: tempId, kind: 'session', sessionId: tempId, name: '新会话', cwd: '' })
+    setActiveSession(tempId)
     resetForSession('新会话', tempId)
 
     try {
-      // Fire backend tab creation in background — bridge starts asynchronously
       const result = await window.hermesDesktop.createSession('新会话')
       if (result?.id) {
-        // Swap the temp tab for the real session tab
-        useSessionStore.setState((s) => ({
-          sessions: s.sessions.map((t) =>
-            t.id === tempId ? { id: result.id, name: result.name, cwd: result.cwd } : t,
-          ),
-          activeId: s.activeId === tempId ? result.id : s.activeId,
-        }))
-        // Activate the new tab's bridge on the backend
+        moveSessionMessages(tempId, result.id)
+        useSessionStore.getState().replaceTab(tempId, {
+          id: result.id,
+          kind: 'session',
+          sessionId: result.id,
+          name: result.name,
+          cwd: result.cwd,
+        })
+        setActiveSession(result.id)
         await window.hermesDesktop.switchSession(result.id)
       }
-      // Start a fresh ACP session on the active bridge
       const snapshot = await window.hermesDesktop.newHermesSession()
       setSnapshot(snapshot)
     } catch {
@@ -260,7 +287,10 @@ export function SkillsPanel() {
   }
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-r border-white/10 bg-[var(--gradient-skills)] px-5 py-5">
+    <aside
+      className="flex shrink-0 flex-col border-r border-white/10 bg-[var(--gradient-skills)] px-5 py-5"
+      style={{ width }}
+    >
       <button
         type="button"
         onClick={() => void handleNewSession()}

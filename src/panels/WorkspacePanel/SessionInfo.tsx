@@ -10,6 +10,8 @@ import {
   Terminal,
 } from 'lucide-react'
 import { useWorkspaceStore } from '@/store/workspace'
+import { getTabType, useSessionStore } from '@/store/sessions'
+import { useChatStore } from '@/store/chat'
 import { CollapsibleSection } from './CollapsibleSection'
 
 type HermesWorktreeInfo = {
@@ -28,6 +30,7 @@ export function SessionInfo() {
   const tasks = useWorkspaceStore((state) => state.tasks)
   const files = useWorkspaceStore((state) => state.files)
   const [status, setStatus] = useState<string | null>(null)
+  const [worktreeStatus, setWorktreeStatus] = useState<string | null>(null)
   const [worktrees, setWorktrees] = useState<HermesWorktreeInfo[]>([])
   const [selectedWorktreePath, setSelectedWorktreePath] = useState('')
   const [newWorktreeName, setNewWorktreeName] = useState('')
@@ -43,7 +46,7 @@ export function SessionInfo() {
 
   const refreshWorktrees = async () => {
     if (!window.hermesDesktop) {
-      setStatus('桌面桥接不可用。')
+      setWorktreeStatus('桌面桥接不可用。')
       return
     }
 
@@ -57,11 +60,15 @@ export function SessionInfo() {
         }
         return list.find((item) => item.current)?.path ?? list[0]?.path ?? ''
       })
-      setStatus(list.length ? `已加载 ${list.length} 个 Git 工作树。` : '未找到 Git 工作树。')
+      setWorktreeStatus(
+        list.length
+          ? `已加载 ${list.length} 个 Git 工作树。`
+          : '当前工作区尚未初始化 Git；点击“新建并切换”会自动完成初始化。',
+      )
     } catch (error) {
       setWorktrees([])
       setSelectedWorktreePath('')
-      setStatus(error instanceof Error ? error.message : '加载工作树失败。')
+      setWorktreeStatus(error instanceof Error ? error.message : '加载工作树失败。')
     } finally {
       setSessionLoading(false)
     }
@@ -78,7 +85,7 @@ export function SessionInfo() {
 
   const handleCreateWorktree = async () => {
     if (!window.hermesDesktop) {
-      setStatus('桌面桥接不可用。')
+      setWorktreeStatus('桌面桥接不可用。')
       return
     }
 
@@ -89,13 +96,15 @@ export function SessionInfo() {
         directory: newWorktreeDirectory,
       })
       setSnapshot(result.snapshot)
+      syncActiveSessionTabCwd(result.snapshot.cwd)
       setNewWorktreeName('')
       setNewWorktreeDirectory('')
       await refreshWorktrees()
       setSelectedWorktreePath(result.worktree.path)
-      setStatus(`已创建工作树 ${result.worktree.name}，分支 ${result.worktree.branch}，当前会话已保留。`)
+      const initializedMessage = result.worktree.initialized ? '已自动初始化 Git 并创建初始快照；' : ''
+      setWorktreeStatus(`${initializedMessage}已创建并切换到 ${result.worktree.name}，分支 ${result.worktree.branch}，当前会话已保留。`)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '创建工作树失败。')
+      setWorktreeStatus(error instanceof Error ? error.message : '创建工作树失败。')
     } finally {
       setSessionLoading(false)
     }
@@ -103,7 +112,7 @@ export function SessionInfo() {
 
   const handleSelectWorktreeDirectory = async () => {
     if (!window.hermesDesktop) {
-      setStatus('桌面桥接不可用。')
+      setWorktreeStatus('桌面桥接不可用。')
       return
     }
 
@@ -111,10 +120,10 @@ export function SessionInfo() {
       const result = await window.hermesDesktop.selectWorktreeDirectory()
       if (!result.canceled && result.path) {
         setNewWorktreeDirectory(result.path)
-        setStatus(`已选择工作树目录：${result.path}`)
+        setWorktreeStatus(`已选择工作树目录：${result.path}`)
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '选择目录失败。')
+      setWorktreeStatus(error instanceof Error ? error.message : '选择目录失败。')
     }
   }
 
@@ -125,12 +134,13 @@ export function SessionInfo() {
 
     setSessionLoading(true)
     try {
-      const snapshot = await window.hermesDesktop.softSwitchWorkspace(selectedWorktree.path)
+      const snapshot = await window.hermesDesktop.switchHermesWorktree(selectedWorktree.path)
       setSnapshot(snapshot)
+      syncActiveSessionTabCwd(snapshot.cwd)
       await refreshWorktrees()
-      setStatus(`已切换到 ${selectedWorktree.name}，当前会话已保留。`)
+      setWorktreeStatus(`已切换到 ${selectedWorktree.name}，当前会话已保留。`)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '切换工作树失败。')
+      setWorktreeStatus(error instanceof Error ? error.message : '切换工作树失败。')
     } finally {
       setSessionLoading(false)
     }
@@ -151,6 +161,7 @@ export function SessionInfo() {
 
       const snapshot = await window.hermesDesktop.softSwitchWorkspace(selected.path)
       setSnapshot(snapshot)
+      syncActiveSessionTabCwd(snapshot.cwd)
       await refreshWorktrees()
       setStatus(`已切换工作区到 ${snapshot.cwd}，当前会话已保留。`)
     } catch (error) {
@@ -325,7 +336,7 @@ export function SessionInfo() {
                 value={newWorktreeDirectory}
                 readOnly
                 disabled={sessionLoading}
-                placeholder="目标目录，可选"
+                placeholder="默认：当前工作区/.worktrees"
                 className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 outline-none transition placeholder:text-slate-600 disabled:cursor-not-allowed disabled:text-slate-500"
               />
               <button
@@ -338,17 +349,20 @@ export function SessionInfo() {
                 选择
               </button>
             </div>
+            <p className="text-[11px] leading-5 text-slate-500">
+              默认创建在当前工作区的 .worktrees 目录；选择目录后，将创建在所选位置。
+            </p>
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => void handleSwitchWorktree()}
-              disabled={sessionLoading || !selectedWorktree}
+              disabled={sessionLoading || !selectedWorktree || selectedWorktree.current}
               className="flex items-center justify-center gap-2 rounded-xl border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs text-cyan-100 transition enabled:hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
             >
               <Terminal className="h-3.5 w-3.5" />
-              切换
+              {selectedWorktree?.current ? '当前' : '切换'}
             </button>
             <button
               type="button"
@@ -357,9 +371,12 @@ export function SessionInfo() {
               className="flex items-center justify-center gap-2 rounded-xl border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-xs text-emerald-100 transition enabled:hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
             >
               <FolderGit2 className="h-3.5 w-3.5" />
-              新建
+              新建并切换
             </button>
           </div>
+          {worktreeStatus ? (
+            <p className="mt-3 break-words text-[11px] leading-5 text-slate-400">{worktreeStatus}</p>
+          ) : null}
         </div>
 
         {isWslBackend && (
@@ -429,4 +446,15 @@ export function SessionInfo() {
       </div>
     </CollapsibleSection>
   )
+}
+
+function syncActiveSessionTabCwd(cwd: string) {
+  const { activeId, sessions, replaceTab } = useSessionStore.getState()
+  const activeTab = sessions.find((tab) => tab.id === activeId)
+  const chatSessionId = useChatStore.getState().activeSessionId
+  const sessionTab = activeTab && getTabType(activeTab) === 'session'
+    ? activeTab
+    : sessions.find((tab) => getTabType(tab) === 'session' && (tab.sessionId ?? tab.id) === chatSessionId)
+  if (!sessionTab) return
+  replaceTab(sessionTab.id, { ...sessionTab, cwd })
 }

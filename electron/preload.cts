@@ -52,6 +52,15 @@ const api = {
   openWorkspaceItem: (itemPath: string) => ipcRenderer.invoke('workspace:open-item', itemPath),
   getWorkspaceItemPaths: (itemPath: string) => ipcRenderer.invoke('workspace:get-item-paths', itemPath),
   renameWorkspaceItem: (itemPath: string, nextName: string) => ipcRenderer.invoke('workspace:rename-item', itemPath, nextName),
+  listPreviewConfigurations: (workspacePath?: string) => ipcRenderer.invoke('preview:list-configurations', workspacePath),
+  startPreviewServer: (workspacePath: string | undefined, configurationId: string) =>
+    ipcRenderer.invoke('preview:start', workspacePath, configurationId),
+  getPreviewServerStatus: (workspacePath: string | undefined, configurationId: string) =>
+    ipcRenderer.invoke('preview:get-status', workspacePath, configurationId),
+  stopPreviewServer: (workspacePath: string | undefined, configurationId: string) =>
+    ipcRenderer.invoke('preview:stop', workspacePath, configurationId),
+  listInstalledBrowsers: () => ipcRenderer.invoke('preview:list-browsers'),
+  openPreviewInBrowser: (url: string, browserId: string) => ipcRenderer.invoke('preview:open-browser', url, browserId),
   getHermesConfig: () => ipcRenderer.invoke('hermes:get-config'),
   setModelConfig: (config: HermesModelConfigRequest) => ipcRenderer.invoke('hermes:set-model-config', config),
   fetchProviderModels: (config: HermesFetchModelsRequest) => ipcRenderer.invoke('hermes:fetch-provider-models', config),

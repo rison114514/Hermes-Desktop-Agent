@@ -41,13 +41,18 @@ function describeSource(source: SlashSuggestion['source']) {
   return source === 'command' ? 'command' : 'skill'
 }
 
-export function InputBar() {
+type InputBarProps = {
+  sessionId?: string
+}
+
+export function InputBar({ sessionId }: InputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const pastePayloadsRef = useRef<PastePayload[]>([])
+  const [localDraft, setLocalDraft] = useState('')
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
   const [showSlashSuggestions, setShowSlashSuggestions] = useState(false)
-  const draft = useChatStore((state) => state.draft)
-  const setDraft = useChatStore((state) => state.setDraft)
+  const storedDraft = useChatStore((state) => state.draft)
+  const setStoredDraft = useChatStore((state) => state.setDraft)
   const addMessage = useChatStore((state) => state.addMessage)
   const replaceMessage = useChatStore((state) => state.replaceMessage)
   const finalizeMessage = useChatStore((state) => state.finalizeMessage)
@@ -56,6 +61,9 @@ export function InputBar() {
   const setConnectionLabel = useChatStore((state) => state.setConnectionLabel)
   const skills = useSkillsStore((state) => state.skills)
   const commands = useSkillsStore((state) => state.commands)
+  const setSkills = useSkillsStore((state) => state.setSkills)
+  const draft = sessionId ? localDraft : storedDraft
+  const setDraft = sessionId ? setLocalDraft : setStoredDraft
 
   const slashDraft = parseSlashDraft(draft)
   const suggestions = useMemo(() => {
@@ -93,6 +101,15 @@ export function InputBar() {
     setActiveSuggestionIndex(0)
     setShowSlashSuggestions(Boolean(slashDraft))
   }, [slashDraft?.query])
+
+  useEffect(() => {
+    if (!slashDraft || !window.hermesDesktop) return
+    let cancelled = false
+    void window.hermesDesktop.getHermesSkills().then((items) => {
+      if (!cancelled) setSkills(items)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [Boolean(slashDraft), setSkills])
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -136,38 +153,38 @@ export function InputBar() {
     const assistantId = createId('assistant')
     // Capture the target session up front so a tab switch mid-send can't route
     // these writes (or the error fallbacks below) into the wrong session.
-    const sessionId = useSessionStore.getState().activeId || undefined
+    const targetSessionId = sessionId || useSessionStore.getState().activeId || undefined
 
-    addMessage({ id: userId, role: 'user', content: displayContent }, sessionId)
+    addMessage({ id: userId, role: 'user', content: displayContent }, targetSessionId)
     addMessage({
       id: assistantId,
       role: 'assistant',
       content: '',
       streaming: true,
       label: 'Waiting',
-    }, sessionId)
+    }, targetSessionId)
     setActiveAssistant(assistantId)
     setConnectionLabel(slash ? `Sending Hermes command /${slash.query}` : 'Sending message to Hermes')
     setDraft('')
     pastePayloadsRef.current = []
 
     if (!window.hermesDesktop) {
-      replaceMessage(assistantId, 'Desktop bridge is not available.', sessionId)
-      finalizeMessage(assistantId, sessionId)
+      replaceMessage(assistantId, 'Desktop bridge is not available.', targetSessionId)
+      finalizeMessage(assistantId, targetSessionId)
       setActiveAssistant(null)
       setConnectionLabel('Desktop bridge unavailable')
       return
     }
 
     try {
-      await window.hermesDesktop.sendMessage(content, sessionId)
+      await window.hermesDesktop.sendMessage(content, targetSessionId)
     } catch (error) {
       replaceMessage(
         assistantId,
         `Unable to connect to Hermes: ${error instanceof Error ? error.message : 'unknown error'}`,
-        sessionId,
+        targetSessionId,
       )
-      finalizeMessage(assistantId, sessionId)
+      finalizeMessage(assistantId, targetSessionId)
       setActiveAssistant(null)
       setConnectionLabel('Send failed')
     }

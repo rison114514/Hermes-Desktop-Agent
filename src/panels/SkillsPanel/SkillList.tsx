@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Check, ChevronRight, Search } from 'lucide-react'
 import { useSkillsStore } from '@/store/skills'
 import { cn } from '@/lib/utils'
@@ -6,7 +6,17 @@ import { cn } from '@/lib/utils'
 export function SkillList() {
   const skills = useSkillsStore((state) => state.skills)
   const toggleSkill = useSkillsStore((state) => state.toggleSkill)
+  const setSkills = useSkillsStore((state) => state.setSkills)
   const [searchQuery, setSearchQuery] = useState('')
+
+  useEffect(() => {
+    const refresh = () => {
+      void window.hermesDesktop?.getHermesSkills().then(setSkills).catch(() => {})
+    }
+    refresh()
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [setSkills])
 
   const filteredSkills = useMemo(() => {
     if (!searchQuery.trim()) return skills

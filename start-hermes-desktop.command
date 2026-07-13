@@ -7,6 +7,7 @@ export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
 export HERMES_TEXT_ENCODING=utf-8
 export HERMES_BACKEND=native
+export HERMES_ACP_PERMISSION_TIMEOUT_SECONDS="${HERMES_ACP_PERMISSION_TIMEOUT_SECONDS:-315360000}"
 export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"
 export ELECTRON_MIRROR="${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}"
 

@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { HermesBridgeEvent } from '../electron/hermes-bridge'
+import type { DetailedHTMLProps, HTMLAttributes } from 'react'
 
 type DesktopWorkspaceFileNode = {
   name: string
@@ -70,6 +71,38 @@ type DesktopHermesFetchModelsRequest = {
   apiKey?: string
 }
 
+type DesktopPreviewStatus = {
+  configurationId: string
+  state: 'starting' | 'running' | 'stopped' | 'error'
+  url?: string
+  port?: number
+  logs: string[]
+  error?: string
+}
+
+type DesktopPreviewConfiguration = {
+  id: string
+  name: string
+  kind: 'script' | 'static'
+  script?: string
+  packageManager?: string
+  framework: string
+  port: number
+  cwd: string
+  status: DesktopPreviewStatus
+}
+
+declare module 'react' {
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: DetailedHTMLProps<HTMLAttributes<HTMLElement>, HTMLElement> & {
+        src?: string
+        partition?: string
+      }
+    }
+  }
+}
+
 declare global {
   interface Window {
     hermesDesktop: {
@@ -93,6 +126,7 @@ declare global {
           branch: string
           name: string
           root: string
+          initialized: boolean
         }
         snapshot: DesktopWorkspaceSnapshot
       }>
@@ -153,6 +187,24 @@ declare global {
         snapshot?: DesktopWorkspaceSnapshot
         error?: string
       }>
+      listPreviewConfigurations: (workspacePath?: string) => Promise<DesktopPreviewConfiguration[]>
+      startPreviewServer: (workspacePath: string | undefined, configurationId: string) => Promise<{
+        ok: boolean
+        status?: DesktopPreviewStatus
+        error?: string
+      }>
+      getPreviewServerStatus: (workspacePath: string | undefined, configurationId: string) => Promise<{
+        ok: boolean
+        status?: DesktopPreviewStatus
+        error?: string
+      }>
+      stopPreviewServer: (workspacePath: string | undefined, configurationId: string) => Promise<{
+        ok: boolean
+        status?: DesktopPreviewStatus
+        error?: string
+      }>
+      listInstalledBrowsers: () => Promise<Array<{ id: string; name: string }>>
+      openPreviewInBrowser: (url: string, browserId: string) => Promise<{ ok: boolean; error?: string }>
       readWorkspaceFile: (filePath: string) => Promise<{
         ok: boolean
         path?: string
@@ -183,6 +235,13 @@ declare global {
         manifest: Record<string, unknown>
         enabled: boolean
         error?: string
+        exports?: {
+          tabs?: Array<{ id: string; title: string; rendererType: string; icon?: string; payload?: Record<string, unknown> }>
+          panels?: Record<string, unknown>
+          skills?: Array<{ id: string; name: string; description: string; enabled?: boolean; category?: string }>
+          commands?: Array<{ id: string; name: string; description: string }>
+          defaultConfig?: Record<string, unknown>
+        }
       }>>
       toggleMod: (modName: string, enabled: boolean) => Promise<{ ok: boolean }>
       uninstallMod: (modPath: string) => Promise<{ ok: boolean }>

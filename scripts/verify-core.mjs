@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import {
   canPreviewFile,
   FILE_PREVIEW_MAX_BYTES,
@@ -9,9 +11,12 @@ import {
   looksBinary,
 } from '../dist-electron/electron/file-preview.js'
 import { HermesBridge } from '../dist-electron/electron/hermes-bridge.js'
+import { createSkillsCatalogPrompt, isInstalledSkillInvocation, readHermesSkills } from '../dist-electron/electron/hermes-skills.js'
 import { looksLikeMojibake, normalizeTextForDisplay } from '../dist-electron/electron/text-normalization.js'
 import { isPathInside } from '../dist-electron/electron/workspace-security.js'
 import { readWorkspaceDirectory } from '../dist-electron/electron/workspace-tree.js'
+import { createHermesWorktree, listHermesWorktrees } from '../dist-electron/electron/worktree.js'
+import { PreviewManager, detectPreviewConfigurations, isAllowedPreviewUrl } from '../dist-electron/electron/preview-manager.js'
 import {
   createUtf8ProcessEnv,
   decodeCommandOutput,
@@ -91,6 +96,41 @@ assert.equal(inferLanguageFromPath('src/app.tsx'), 'tsx')
 assert.equal(inferLanguageFromPath('README.md'), 'markdown')
 assert.equal(inferLanguageFromPath('unknown'), 'text')
 
+const execFileAsync = promisify(execFile)
+
+const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'hermes-skills-'))
+try {
+  await mkdir(path.join(skillsRoot, 'flat-skill'), { recursive: true })
+  await writeFile(path.join(skillsRoot, 'flat-skill', 'SKILL.md'), [
+    '---',
+    'name: flat-skill',
+    'description: |',
+    '  First description line.',
+    '  Second description line.',
+    '---',
+    '# Flat skill',
+  ].join('\n'))
+  await mkdir(path.join(skillsRoot, 'writing', 'nested-skill'), { recursive: true })
+  await writeFile(path.join(skillsRoot, 'writing', 'nested-skill', 'SKILL.md'), [
+    '---',
+    'name: nested-skill',
+    'description: Nested description.',
+    '---',
+    '# Nested skill',
+  ].join('\n'))
+
+  const skills = await readHermesSkills(skillsRoot)
+  assert.deepEqual(skills.map((skill) => skill.id), ['flat-skill', 'writing/nested-skill'])
+  assert.equal(skills[0].description, 'First description line.\nSecond description line.')
+  assert.equal(skills[1].category, 'writing')
+  assert.match(createSkillsCatalogPrompt(skills), /flat-skill: First description line\. Second description line\./)
+  assert.equal(isInstalledSkillInvocation('/flat-skill do the task', skills), true)
+  assert.equal(isInstalledSkillInvocation('/flat_skill do the task', skills), true)
+  assert.equal(isInstalledSkillInvocation('/help', skills), false)
+} finally {
+  await rm(skillsRoot, { recursive: true, force: true })
+}
+
 const tempRoot = await mkdtemp(path.join(process.cwd(), '.verify-core-'))
 try {
   await mkdir(path.join(tempRoot, 'node_modules'))
@@ -115,12 +155,113 @@ try {
   await rm(tempRoot, { recursive: true, force: true })
 }
 
+const worktreeRoot = await mkdtemp(path.join(os.tmpdir(), 'hermes-worktree-'))
+const customWorktreeParent = await mkdtemp(path.join(os.tmpdir(), 'hermes-worktree-custom-'))
+try {
+  await execFileAsync('git', ['init', worktreeRoot])
+  await execFileAsync('git', ['-C', worktreeRoot, 'config', 'user.email', 'hermes-test@example.com'])
+  await execFileAsync('git', ['-C', worktreeRoot, 'config', 'user.name', 'Hermes Test'])
+  await writeFile(path.join(worktreeRoot, 'README.md'), 'Hermes worktree test\n')
+  await execFileAsync('git', ['-C', worktreeRoot, 'add', 'README.md'])
+  await execFileAsync('git', ['-C', worktreeRoot, 'commit', '-m', 'Initial commit'])
+
+  await mkdir(path.join(worktreeRoot, 'shared', 'nested'), { recursive: true })
+  await writeFile(path.join(worktreeRoot, 'shared', 'nested', 'config.txt'), 'copied\n')
+  await writeFile(path.join(worktreeRoot, '.worktreeinclude'), 'shared\n')
+
+  const initialWorktrees = await listHermesWorktrees(worktreeRoot, worktreeRoot)
+  assert.equal(initialWorktrees.length, 1)
+  assert.equal(initialWorktrees[0].current, true)
+
+  const createdWorktree = await createHermesWorktree(worktreeRoot, worktreeRoot, { name: 'core-test' })
+  assert.equal(createdWorktree.branch, 'hermes/core-test')
+  assert.equal(
+    await readFile(path.join(createdWorktree.path, 'shared', 'nested', 'config.txt'), 'utf8'),
+    'copied\n',
+  )
+
+  const secondWorktree = await createHermesWorktree(worktreeRoot, worktreeRoot, {
+    name: 'core-test',
+    directory: customWorktreeParent,
+  })
+  assert.equal(secondWorktree.branch, 'hermes/core-test-2')
+  assert.equal(path.dirname(secondWorktree.path), customWorktreeParent)
+  assert.equal(
+    (await readFile(path.join(worktreeRoot, '.gitignore'), 'utf8'))
+      .split(/\r?\n/)
+      .filter((line) => line === '.worktrees/').length,
+    1,
+  )
+
+  const listedWorktrees = await listHermesWorktrees(secondWorktree.path, secondWorktree.path)
+  assert.equal(listedWorktrees.length, 3)
+  assert.equal(listedWorktrees.find((item) => item.branch === secondWorktree.branch)?.current, true)
+} finally {
+  await rm(worktreeRoot, { recursive: true, force: true })
+  await rm(customWorktreeParent, { recursive: true, force: true })
+}
+
+const uninitializedRoot = await mkdtemp(path.join(os.tmpdir(), 'hermes-worktree-init-'))
+try {
+  await writeFile(path.join(uninitializedRoot, 'project.txt'), 'uninitialized workspace\n')
+  const createdWorktree = await createHermesWorktree(uninitializedRoot, uninitializedRoot, {
+    name: 'first-worktree',
+  })
+
+  assert.equal(createdWorktree.initialized, true)
+  assert.equal(
+    await realpath(createdWorktree.path),
+    await realpath(path.join(uninitializedRoot, '.worktrees', 'first-worktree')),
+  )
+  assert.equal(await readFile(path.join(createdWorktree.path, 'project.txt'), 'utf8'), 'uninitialized workspace\n')
+  assert.match(
+    (await execFileAsync('git', ['-C', uninitializedRoot, 'log', '-1', '--format=%s'])).stdout,
+    /Initial workspace snapshot/,
+  )
+} finally {
+  await rm(uninitializedRoot, { recursive: true, force: true })
+}
+
 const bridge = new HermesBridge()
+const idleWorkspace = path.join(process.cwd(), 'workspace-switch-check')
+await bridge.updateWorkspace(idleWorkspace)
+assert.equal(bridge.getWorkspacePath(), idleWorkspace)
 const defaultPermissionOutcome = await bridge.resolvePermissionRequest({ options: [{ optionId: 'allow' }] })
 assert.deepEqual(defaultPermissionOutcome, { outcome: { outcome: 'cancelled' } })
 bridge.setPermissionHandler(() => ({ outcome: { outcome: 'selected', option_id: 'allow-once' } }))
 const selectedPermissionOutcome = await bridge.resolvePermissionRequest({})
 assert.deepEqual(selectedPermissionOutcome, { outcome: { outcome: 'selected', option_id: 'allow-once' } })
 bridge.stop()
+
+assert.equal(isAllowedPreviewUrl('http://127.0.0.1:5173/'), true)
+assert.equal(isAllowedPreviewUrl('https://localhost:3000/path'), true)
+assert.equal(isAllowedPreviewUrl('https://example.com/'), false)
+assert.equal(isAllowedPreviewUrl('file:///tmp/index.html'), false)
+
+const previewRoot = await mkdtemp(path.join(process.cwd(), '.verify-preview-'))
+try {
+  await writeFile(path.join(previewRoot, 'package.json'), JSON.stringify({
+    scripts: {
+      dev: 'concurrently "vite" "electron ."',
+      'dev:renderer': 'vite',
+    },
+    devDependencies: { vite: '^7.0.0' },
+  }))
+  await writeFile(path.join(previewRoot, 'package-lock.json'), '{}')
+  await writeFile(path.join(previewRoot, 'index.html'), '<h1>Hermes preview</h1>')
+
+  const configurations = await detectPreviewConfigurations(previewRoot)
+  assert.deepEqual(configurations.map((item) => item.id), ['script:dev:renderer', 'static:index'])
+  assert.equal(configurations[0].framework, 'vite')
+
+  const previews = new PreviewManager()
+  const started = await previews.start(previewRoot, 'static:index')
+  assert.equal(started.state, 'running')
+  assert.match(await (await fetch(started.url)).text(), /Hermes preview/)
+  const stopped = await previews.stop(previewRoot, 'static:index')
+  assert.equal(stopped.state, 'stopped')
+} finally {
+  await rm(previewRoot, { recursive: true, force: true })
+}
 
 console.log('Core verification passed.')

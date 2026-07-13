@@ -4,6 +4,15 @@ const sshManager = require('./ssh-manager.cjs')
 function log(...args) { console.log('[hermes-ssh]', ...args) }
 
 module.exports = {
+  tabs: [
+    {
+      id: 'ssh-manager',
+      title: 'SSH 管理',
+      rendererType: 'ssh-manager',
+      icon: 'terminal',
+    },
+  ],
+
   panels: {
     sidebar: {
       type: 'ssh-manager',

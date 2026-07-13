@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type MouseEvent, type ReactNode } from 'react'
+import { useRef, useState, type DragEvent, type ReactNode } from 'react'
 
 interface DraggableCardProps {
   id: string
@@ -7,31 +7,31 @@ interface DraggableCardProps {
 }
 
 export function DraggableCard({ id, children, onMove }: DraggableCardProps) {
+  const cardRef = useRef<HTMLDivElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
-  const [canDrag, setCanDrag] = useState(true)
 
-  const isInteractiveTarget = (target: EventTarget | null) => {
-    return target instanceof HTMLElement && Boolean(target.closest(
-      'input, textarea, select, button, a, [contenteditable="true"], [data-no-card-drag]',
-    ))
-  }
-
-  const handleMouseDown = (e: MouseEvent<HTMLDivElement>) => {
-    setCanDrag(!isInteractiveTarget(e.target))
+  const isSafeTarget = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) return false
+    if (target.closest('input, textarea, select, [contenteditable="true"], [data-no-card-drag]')) return true
+    const control = target.closest('button, a')
+    if (!control) return false
+    const collapsedToggle = control.closest('[data-card-toggle]') && control.closest('[data-card-open="false"]')
+    return !collapsedToggle
   }
 
   const handleDragStart = (e: DragEvent<HTMLDivElement>) => {
-    if (isInteractiveTarget(e.target) || !canDrag) {
+    if (isSafeTarget(e.target)) {
       e.preventDefault()
       return
     }
     e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('application/x-hermes-sidebar-card', id)
     e.dataTransfer.setData('text/plain', id)
-    ;(e.currentTarget as HTMLElement).style.opacity = '0.4'
+    if (cardRef.current) cardRef.current.style.opacity = '0.55'
   }
 
-  const handleDragEnd = (e: DragEvent<HTMLDivElement>) => {
-    ;(e.currentTarget as HTMLElement).style.opacity = '1'
+  const handleDragEnd = () => {
+    if (cardRef.current) cardRef.current.style.opacity = '1'
     setDragOver(false)
   }
 
@@ -48,7 +48,7 @@ export function DraggableCard({ id, children, onMove }: DraggableCardProps) {
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     setDragOver(false)
-    const dragId = e.dataTransfer.getData('text/plain')
+    const dragId = e.dataTransfer.getData('application/x-hermes-sidebar-card') || e.dataTransfer.getData('text/plain')
     if (dragId && dragId !== id) {
       onMove(dragId, id)
     }
@@ -56,15 +56,14 @@ export function DraggableCard({ id, children, onMove }: DraggableCardProps) {
 
   return (
     <div
-      draggable={canDrag}
-      onMouseDown={handleMouseDown}
-      onMouseUp={() => setCanDrag(true)}
+      ref={cardRef}
+      draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`relative transition-all duration-150 ${
+      className={`group/card relative transition-all duration-150 ${
         dragOver
           ? 'rounded-2xl ring-2 ring-cyan-300/40 ring-offset-2 ring-offset-transparent'
           : ''

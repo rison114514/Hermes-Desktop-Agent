@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import {
   ChevronDown, Folder, File, RefreshCw, Terminal, Upload,
-  Plug, PlugZap, Plus, Trash2, Settings, X, Key, Eye, EyeOff, Activity
+  Plug, PlugZap, Plus, Trash2, Settings, X, Key, Eye, EyeOff, Activity, ExternalLink
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useModsStore } from '@/store/mods'
+import { useSessionStore } from '@/store/sessions'
 
 interface ServerConfig {
   name: string
@@ -24,7 +25,7 @@ interface FileEntry {
   name: string; size: number; isDir: boolean; mode: number; mtime: number
 }
 
-export function SSHPanel() {
+export function SSHPanel({ variant = 'card' }: { variant?: 'card' | 'page' }) {
   const [servers, setServers] = useState<ServerInfo[]>([])
   const [configs, setConfigs] = useState<ServerConfig[]>([])
   const [activeHost, setActiveHost] = useState('')
@@ -33,7 +34,7 @@ export function SSHPanel() {
   const [currentPath, setCurrentPath] = useState('/')
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState('')
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(variant === 'page')
   const [showAddForm, setShowAddForm] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [editingServer, setEditingServer] = useState<string | null>(null)
@@ -47,6 +48,7 @@ export function SSHPanel() {
   // server configs/status load even if this panel mounted before the mod IPC
   // handlers were registered.
   const modsReadyNonce = useModsStore((s) => s.modsReadyNonce)
+  const openTab = useSessionStore((s) => s.openTab)
   useEffect(() => { refreshStatus() }, [modsReadyNonce])
 
   const callMod = async (method: string, args?: Record<string, unknown>) => {
@@ -202,27 +204,54 @@ export function SSHPanel() {
   }
 
   const connectedServer = servers.find(s => s.connected && s.host === activeHost)
+  const expanded = variant === 'page' || open
+
+  const openSshTab = () => {
+    openTab({
+      id: 'mod:hermes-ssh:ssh-manager',
+      kind: 'mod',
+      modName: 'hermes-ssh',
+      rendererType: 'ssh-manager',
+      name: 'SSH 管理',
+      closable: true,
+    })
+  }
 
   return (
-    <div className="rounded-[28px] border border-white/10 bg-white/5 p-4">
-      <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open}
-        className="flex w-full items-center justify-between gap-3 text-left">
+    <div className={cn(
+      'border border-white/10 bg-white/5 p-4',
+      variant === 'page' ? 'm-6 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl' : 'rounded-[28px]',
+    )}>
+      <div className="flex w-full items-center justify-between gap-3 text-left">
+        <button type="button" onClick={() => variant === 'card' && setOpen(v => !v)} aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left">
         <div className="flex min-w-0 items-center gap-2">
           <Terminal className="h-4 w-4 shrink-0 text-sky-200" />
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.28em] text-slate-400">SSH</p>
-            {!open && (
+            {!expanded && (
               <p className="mt-0.5 truncate text-[11px] text-slate-500">
                 {connectedServer ? `${connectedServer.name} · 已连接` : configs.length > 0 ? `${configs.length} 台主机` : '未配置'}
               </p>
             )}
           </div>
         </div>
-        <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${open ? 'rotate-180' : ''}`} />
-      </button>
+        {variant === 'card' ? <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${open ? 'rotate-180' : ''}`} /> : null}
+        </button>
+        {variant === 'card' ? (
+          <button
+            type="button"
+            onClick={openSshTab}
+            className="grid h-7 w-7 place-items-center rounded-full border border-white/10 text-slate-500 transition hover:text-sky-200"
+            title="在标签页打开"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
 
-      {open ? (
-        <div className="mt-4 space-y-3">
+      {expanded ? (
+        <div className={cn('mt-4 space-y-3', variant === 'page' && 'min-h-0 flex-1 overflow-y-auto pr-1')}>
           {/* Server list */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">

@@ -29,9 +29,9 @@ export function ModelConfig() {
     if (providerId) setDraftProvider(providerId)
     openTab({
       id: 'model-config',
+      kind: 'normal',
       name: '模型配置',
-      cwd: '',
-      type: 'model-config',
+      pageId: 'model-config',
       closable: true,
       detachable: true,
     })

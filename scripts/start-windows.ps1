@@ -17,6 +17,9 @@ $env:PYTHONIOENCODING = "utf-8"
 $env:LANG = "C.UTF-8"
 $env:LC_ALL = "C.UTF-8"
 $env:HERMES_TEXT_ENCODING = "utf-8"
+if ([string]::IsNullOrWhiteSpace($env:HERMES_ACP_PERMISSION_TIMEOUT_SECONDS)) {
+  $env:HERMES_ACP_PERMISSION_TIMEOUT_SECONDS = "315360000"
+}
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot

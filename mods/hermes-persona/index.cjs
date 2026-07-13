@@ -18,11 +18,43 @@ function loadPersonas(modDir) {
   return list
 }
 
+function getPersonaPath(modDir, id) {
+  const dir = path.join(modDir, 'personas')
+  return path.join(dir, `${id}.json`)
+}
+
+function savePersona(modDir, detail) {
+  if (!detail || !detail.id) return { ok: false, error: '人格 id 不能为空' }
+  const existing = personas.find(p => p.id === detail.id)
+  if (!existing) return { ok: false, error: '未找到人格' }
+  const next = {
+    ...existing,
+    name: String(detail.name || existing.name || ''),
+    icon: String(detail.icon || existing.icon || 'bot'),
+    description: String(detail.description || ''),
+    activation: String(detail.activation || ''),
+    id: existing.id,
+  }
+  fs.writeFileSync(getPersonaPath(modDir, existing.id), JSON.stringify(next, null, 2), 'utf8')
+  personas = loadPersonas(modDir)
+  return { ok: true, persona: next }
+}
+
 // Store personas for use in hooks — populated in onEnable
 let personas = []
 let currentId = null
+let currentModDir = __dirname
 
 module.exports = {
+  tabs: [
+    {
+      id: 'persona-editor',
+      title: '人格编辑',
+      rendererType: 'persona-editor',
+      icon: 'bot',
+    },
+  ],
+
   panels: {
     sidebar: {
       type: 'persona-list',
@@ -41,7 +73,8 @@ module.exports = {
   },
 
   onEnable(ctx) {
-    personas = loadPersonas(ctx.modDir || path.join(__dirname))
+    currentModDir = ctx.modDir || path.join(__dirname)
+    personas = loadPersonas(currentModDir)
     // Restore last active persona from config
     const saved = ctx.getConfig('activePersona')
     if (saved && personas.some(p => p.id === saved)) {
@@ -76,5 +109,17 @@ module.exports = {
 
   getActivePersona() {
     return currentId
+  },
+
+  main: {
+    ipcHandlers: {
+      'get-persona-detail'(_event, { id }) {
+        const persona = personas.find(p => p.id === id)
+        return persona ? { ok: true, persona } : { ok: false, error: '未找到人格' }
+      },
+      'save-persona'(_event, { persona }) {
+        return savePersona(currentModDir, persona)
+      },
+    },
   },
 }

@@ -24,6 +24,7 @@ export interface LoadedMod {
 }
 
 export interface ModExports {
+  tabs?: Array<{ id: string; title: string; rendererType: string; icon?: string; payload?: Record<string, unknown> }>
   skills?: Array<{ id: string; name: string; description: string; enabled?: boolean; category?: string }>
   commands?: Array<{ id: string; name: string; description: string }>
   panels?: {

@@ -44,11 +44,14 @@ interface ChatStore {
   setConnectionLabel: (label: string) => void
   addSessionMarker: (label: string, sessionId?: string) => void
   resetForSession: (label: string, sessionId?: string) => void
+  moveSessionMessages: (oldId: string, newId: string) => void
 }
+
+const EMPTY_MESSAGES: Message[] = []
 
 function sessionMessages(state: ChatStore, sessionId?: string): Message[] {
   const sid = sessionId || state.activeSessionId || 'default'
-  return state.allMessages[sid] || []
+  return state.allMessages[sid] || EMPTY_MESSAGES
 }
 
 function updateAllMessages(
@@ -122,11 +125,13 @@ export const useChatStore = create<ChatStore>((set) => ({
   setActiveSession: (id) =>
     set((state) => {
       const sid = id || 'default'
-      if (!state.allMessages[sid]) state.allMessages[sid] = warmWelcome()
+      const allMessages = state.allMessages[sid]
+        ? state.allMessages
+        : { ...state.allMessages, [sid]: warmWelcome() }
       // Do NOT clear permissionRequests here: a background tab may have a
       // pending prompt that must survive tab switches. ChatPanel filters the
       // list down to the active session for display.
-      return { activeSessionId: sid, messages: state.allMessages[sid], activeAssistantId: null }
+      return { allMessages, activeSessionId: sid, messages: allMessages[sid], activeAssistantId: null }
     }),
 
   addMessage: (message, sessionId) =>
@@ -213,6 +218,24 @@ export const useChatStore = create<ChatStore>((set) => ({
   resetForSession: (label, sessionId) =>
     set((state) => {
       const sid = sessionId || state.activeSessionId || 'default'
-      return { allMessages: { ...state.allMessages, [sid]: [{ id: `rs-${Date.now()}`, role: 'system' as const, content: label, tone: 'muted' as const, label: 'Session', kind: 'text' as const }] } }
+      const messages = [{ id: `rs-${Date.now()}`, role: 'system' as const, content: label, tone: 'muted' as const, label: 'Session', kind: 'text' as const }]
+      return {
+        allMessages: { ...state.allMessages, [sid]: messages },
+        messages: sid === state.activeSessionId ? messages : state.messages,
+      }
+    }),
+
+  moveSessionMessages: (oldId, newId) =>
+    set((state) => {
+      if (!oldId || !newId || oldId === newId) return {}
+      const nextMessages = state.allMessages[oldId] ?? state.allMessages[newId] ?? warmWelcome()
+      const allMessages = { ...state.allMessages, [newId]: nextMessages }
+      delete allMessages[oldId]
+      const activeSessionId = state.activeSessionId === oldId ? newId : state.activeSessionId
+      return {
+        allMessages,
+        activeSessionId,
+        messages: activeSessionId === newId ? nextMessages : state.messages,
+      }
     }),
 }))

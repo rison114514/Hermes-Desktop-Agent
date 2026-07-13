@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { ChatPanel } from '@/panels/ChatPanel'
 import { SkillsPanel } from '@/panels/SkillsPanel'
 import { WorkspacePanel } from '@/panels/WorkspacePanel'
@@ -36,8 +36,33 @@ function looksLikeError(content: string): boolean {
   return false
 }
 
+const LEFT_PANEL_MIN = 240
+const LEFT_PANEL_MAX = 560
+const RIGHT_PANEL_MIN = 260
+const RIGHT_PANEL_MAX = 620
+
+function readStoredWidth(key: string, fallback: number, min: number, max: number) {
+  try {
+    const value = Number(localStorage.getItem(key))
+    if (Number.isFinite(value)) {
+      return Math.min(max, Math.max(min, value))
+    }
+  } catch { /* noop */ }
+  return fallback
+}
+
+function persistWidth(key: string, value: number) {
+  try { localStorage.setItem(key, String(Math.round(value))) } catch { /* noop */ }
+}
+
 export default function App() {
   const theme = useThemeStore((state) => state.theme)
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
+    readStoredWidth('hermes-left-panel-width', 320, LEFT_PANEL_MIN, LEFT_PANEL_MAX),
+  )
+  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
+    readStoredWidth('hermes-right-panel-width', 384, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX),
+  )
   const setSnapshot = useWorkspaceStore((state) => state.setSnapshot)
   const selectedFilePath = useWorkspaceStore((state) => state.selectedFilePath)
   const setPreview = useWorkspaceStore((state) => state.setPreview)
@@ -208,6 +233,11 @@ export default function App() {
         return
       }
 
+      if (event.type === 'skills:updated') {
+        setSkills(event.payload)
+        return
+      }
+
       if (event.type === 'permission:request') {
         addPermissionRequest(event.payload)
         setConnectionLabel('Hermes is waiting for permission')
@@ -282,14 +312,67 @@ export default function App() {
     upsertToolMessage,
   ])
 
+  const beginResize = (side: 'left' | 'right', event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = side === 'left' ? leftPanelWidth : rightPanelWidth
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX
+      if (side === 'left') {
+        const next = Math.min(LEFT_PANEL_MAX, Math.max(LEFT_PANEL_MIN, startWidth + delta))
+        setLeftPanelWidth(next)
+        persistWidth('hermes-left-panel-width', next)
+      } else {
+        const next = Math.min(RIGHT_PANEL_MAX, Math.max(RIGHT_PANEL_MIN, startWidth - delta))
+        setRightPanelWidth(next)
+        persistWidth('hermes-right-panel-width', next)
+      }
+    }
+
+    const handleUp = () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+  }
+
   return (
     <div data-theme={theme} className="flex h-screen flex-col overflow-hidden rounded-[28px] border border-white/10 bg-app-bg text-slate-100">
       <TitleBar />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <SkillsPanel />
+        <SkillsPanel width={leftPanelWidth} />
+        <PanelResizeHandle side="left" onMouseDown={(event) => beginResize('left', event)} />
         <ChatPanel />
-        <WorkspacePanel />
+        <PanelResizeHandle side="right" onMouseDown={(event) => beginResize('right', event)} />
+        <WorkspacePanel width={rightPanelWidth} />
       </div>
+    </div>
+  )
+}
+
+function PanelResizeHandle({
+  side,
+  onMouseDown,
+}: {
+  side: 'left' | 'right'
+  onMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => void
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={side === 'left' ? '调整左侧栏宽度' : '调整右侧栏宽度'}
+      onMouseDown={onMouseDown}
+      className="group relative z-20 w-1.5 shrink-0 cursor-col-resize bg-transparent"
+    >
+      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/10 transition group-hover:bg-cyan-300/50" />
     </div>
   )
 }

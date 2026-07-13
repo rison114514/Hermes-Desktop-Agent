@@ -6,7 +6,7 @@
 // The porcelain output format of `git worktree list` is identical on both
 // platforms, so the parsing logic is shared.
 
-import { existsSync, mkdirSync, readFileSync, appendFileSync, copyFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { simpleGit } from 'simple-git'
 import { getBackendProvider } from './backend.js'
@@ -44,7 +44,7 @@ export async function createHermesWorktree(
   const gitAvailable = await backend.gitAvailable()
   if (!gitAvailable) {
     throw new Error(
-      'Git is not available on this system. Install Git for Windows (https://git-scm.com) to use worktrees.',
+      'Git is not available on this system. Install Git (https://git-scm.com) to use worktrees.',
     )
   }
 
@@ -78,7 +78,8 @@ async function createWorktreeNative(
   currentWorkspacePath: string,
   options: CreateWorktreeOptions,
 ) {
-  const root = await gitRevParse(hostPath, '--show-toplevel')
+  const repository = await ensureNativeGitRepository(hostPath)
+  const root = repository.root
   const short = await gitRevParse(root, '--short', 'HEAD')
   const stamp = dateStamp()
   const baseName = normalizeWorktreeName(options.name) ?? `hermes-${stamp}-${short}`
@@ -87,6 +88,7 @@ async function createWorktreeNative(
   )
 
   const git = simpleGit(root)
+  mkdirSync(path.dirname(worktreePath), { recursive: true })
   await git.raw(['worktree', 'add', worktreePath, '-b', branch, 'HEAD'])
   await finalizeWorktreeNative(root, worktreePath)
 
@@ -95,6 +97,65 @@ async function createWorktreeNative(
     branch,
     name,
     root,
+    initialized: repository.initialized,
+  }
+}
+
+async function ensureNativeGitRepository(hostPath: string) {
+  const workspacePath = path.resolve(hostPath)
+  let root = ''
+  let initialized = false
+
+  try {
+    root = await gitRevParse(workspacePath, '--show-toplevel')
+  } catch (error) {
+    if (!isNotGitRepositoryError(error)) throw error
+    await simpleGit(workspacePath).init()
+    root = await gitRevParse(workspacePath, '--show-toplevel')
+    initialized = true
+  }
+
+  ensureWorktreeIgnoreNative(root)
+  if (!await gitHasHeadNative(root)) {
+    await createInitialCommitNative(root)
+    initialized = true
+  }
+
+  return { root, initialized }
+}
+
+async function gitHasHeadNative(root: string) {
+  try {
+    await simpleGit(root).raw(['rev-parse', '--verify', 'HEAD'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function createInitialCommitNative(root: string) {
+  const git = simpleGit(root)
+  await git.raw(['add', '-A'])
+
+  const [userName, userEmail] = await Promise.all([
+    git.raw(['config', 'user.name']).then((value) => value.trim()).catch(() => ''),
+    git.raw(['config', 'user.email']).then((value) => value.trim()).catch(() => ''),
+  ])
+  const identityArgs = userName && userEmail
+    ? []
+    : ['-c', 'user.name=Hermes Desktop', '-c', 'user.email=hermes-desktop@localhost']
+
+  try {
+    await git.raw([
+      ...identityArgs,
+      'commit',
+      '--allow-empty',
+      '-m',
+      'Initial workspace snapshot',
+    ])
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to create the initial Git snapshot for this workspace. ${detail}`)
   }
 }
 
@@ -150,7 +211,7 @@ function resolveWorktreePathNative(root: string, name: string, directory?: strin
 async function gitBranchExistsNative(root: string, branch: string) {
   try {
     const git = simpleGit(root)
-    await git.raw(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`])
+    await git.raw(['show-ref', '--verify', `refs/heads/${branch}`])
     return true
   } catch {
     return false
@@ -158,21 +219,7 @@ async function gitBranchExistsNative(root: string, branch: string) {
 }
 
 async function finalizeWorktreeNative(root: string, worktreePath: string) {
-  const gitignorePath = path.join(root, '.gitignore')
-  const marker = '.worktrees/'
-
-  // Ensure .gitignore has .worktrees/ entry
-  let gitignoreContent = ''
-  try {
-    gitignoreContent = readFileSync(gitignorePath, 'utf8')
-  } catch {
-    // no .gitignore yet — create it
-  }
-
-  if (!gitignoreContent.split(/\r?\n/).some((line) => line.trim() === marker.replace(/\/$/, ''))) {
-    const suffix = gitignoreContent && !gitignoreContent.endsWith('\n') ? '\n' : ''
-    appendFileSync(gitignorePath, `${suffix}${marker}\n`, 'utf8')
-  }
+  ensureWorktreeIgnoreNative(root)
 
   // Copy .worktreeinclude files
   const worktreeIncludePath = path.join(root, '.worktreeinclude')
@@ -188,12 +235,37 @@ async function finalizeWorktreeNative(root: string, worktreePath: string) {
     let include = rawLine.replace(/#.*$/, '').trim()
     if (!include) continue
 
-    const sourcePath = path.join(root, include)
+    const sourcePath = path.resolve(root, include)
+    const relativePath = path.relative(root, sourcePath)
+    if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+      continue
+    }
     if (!existsSync(sourcePath)) continue
 
-    const destPath = path.join(worktreePath, include)
+    const destPath = path.join(worktreePath, relativePath)
     mkdirSync(path.dirname(destPath), { recursive: true })
-    copyFileSync(sourcePath, destPath)
+    cpSync(sourcePath, destPath, { recursive: true, force: true })
+  }
+}
+
+function ensureWorktreeIgnoreNative(root: string) {
+  const gitignorePath = path.join(root, '.gitignore')
+  const marker = '.worktrees/'
+
+  // Ensure .gitignore has .worktrees/ entry
+  let gitignoreContent = ''
+  try {
+    gitignoreContent = readFileSync(gitignorePath, 'utf8')
+  } catch {
+    // no .gitignore yet — create it
+  }
+
+  if (!gitignoreContent.split(/\r?\n/).some((line) => {
+    const entry = line.trim().replace(/\/$/, '')
+    return entry === marker.replace(/\/$/, '')
+  })) {
+    const suffix = gitignoreContent && !gitignoreContent.endsWith('\n') ? '\n' : ''
+    appendFileSync(gitignorePath, `${suffix}${marker}\n`, 'utf8')
   }
 }
 
@@ -355,7 +427,7 @@ function parseWorktreePorcelain(
   currentHostPath: string,
 ): HermesWorktreeInfo[] {
   // Normalize for cross-platform path comparison
-  const currentNormalized = path.resolve(currentHostPath).replace(/\\/g, '/').replace(/\/+$/, '')
+  const currentNormalized = normalizeNativePath(currentHostPath)
   const worktrees: HermesWorktreeInfo[] = []
   let current: Partial<HermesWorktreeInfo> | null = null
 
@@ -404,7 +476,7 @@ function normalizeWorktreeInfoNative(
   currentNormalized: string,
 ): HermesWorktreeInfo {
   const worktreePath = info.path ?? ''
-  const worktreeNormalized = path.resolve(worktreePath).replace(/\\/g, '/').replace(/\/+$/, '')
+  const worktreeNormalized = normalizeNativePath(worktreePath)
   return {
     path: worktreePath,
     branch: info.detached ? 'detached' : info.branch ?? '',
@@ -413,6 +485,18 @@ function normalizeWorktreeInfoNative(
     current: worktreeNormalized === currentNormalized,
     name: path.basename(worktreePath),
   }
+}
+
+function normalizeNativePath(value: string) {
+  let normalized = ''
+  try {
+    normalized = realpathSync.native(value)
+  } catch {
+    normalized = path.resolve(value)
+  }
+
+  normalized = normalized.replace(/\\/g, '/').replace(/\/+$/, '')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
 // WSL-specific porcelain parser (uses POSIX path comparison)

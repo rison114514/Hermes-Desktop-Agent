@@ -14,6 +14,7 @@ export type HermesBridgeEvent =
   | { type: 'tool'; payload: { id?: string; name: string; args?: string; result?: string; status: 'running' | 'completed' } }
   | { type: 'permission:request'; payload: HermesPermissionRequest }
   | { type: 'commands'; payload: HermesCommandInfo[] }
+  | { type: 'skills:updated'; payload: Array<{ id: string; name: string; category: string; description: string; enabled: boolean }> }
   | { type: 'stderr'; payload: string }
   | { type: 'raw'; payload: unknown }
   | { type: 'workspace:snapshot'; payload: unknown }
@@ -93,6 +94,7 @@ export class HermesBridge extends EventEmitter {
   private historyTurnCounter = 0
   private historyFlushTimer: NodeJS.Timeout | null = null
   private historyMaxTimeout: NodeJS.Timeout | null = null
+  private suppressHistoryReplay = false
   private stderrBuffer: string[] = []
   private recentStderrLines: string[] = []
   private stderrFlushTimer: NodeJS.Timeout | null = null
@@ -144,17 +146,42 @@ export class HermesBridge extends EventEmitter {
     })
   }
 
-  /** Soft workspace switch — updates path WITHOUT killing the ACP process.
-   *  Use this when the user wants to change workspace but keep the conversation
-   *  context alive.  The next sendMessage call will still use the active ACP
-   *  session; the model has shell access and can navigate to the new directory. */
-  updateWorkspace(workspacePath: string) {
+  /** Rebind the active conversation to a new workspace.
+   *  ACP prompt requests do not carry cwd, so the running agent must be
+   *  recreated and the same persisted session loaded with the new path. */
+  async updateWorkspace(workspacePath: string) {
     if (workspacePath === this.workspacePath) return
+    if (this.promptInFlight) {
+      throw new Error('Cancel the current Hermes turn before switching workspace.')
+    }
 
+    const previousWorkspacePath = this.workspacePath
+    const activeSessionId = this.sessionId
     this.workspacePath = workspacePath
+
+    if (activeSessionId) {
+      this.stop()
+      try {
+        await this.ensureBackend()
+        await this.loadSessionIntoBackend(activeSessionId, false)
+      } catch (error) {
+        const switchError = error instanceof Error ? error : new Error(String(error))
+        this.stop()
+        this.workspacePath = previousWorkspacePath
+        try {
+          await this.ensureBackend()
+          await this.loadSessionIntoBackend(activeSessionId, false)
+        } catch (rollbackError) {
+          const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          throw new Error(`${switchError.message}\nFailed to restore the previous workspace: ${detail}`)
+        }
+        throw switchError
+      }
+    }
+
     this.emitEvent({
       type: 'status',
-      payload: { stage: 'workspace', detail: `Workspace updated to ${workspacePath} (session preserved)` },
+      payload: { stage: 'workspace', detail: `Workspace switched to ${workspacePath} (session preserved)` },
     })
   }
 
@@ -254,37 +281,7 @@ export class HermesBridge extends EventEmitter {
   async loadSession(sessionId: string, workspacePath: string) {
     await this.switchWorkspace(workspacePath)
     await this.ensureBackend()
-
-    const cwd = this.backend!.toBackendPath(this.workspacePath)
-    this.clearHistoryReplay()
-    this.loadingSessionHistory = true
-    this.historyTurns = []
-    this.historyTurnCounter = 0
-    let result: unknown
-    result = await this.sendRequest('session/load', {
-      cwd,
-      sessionId,
-      mcpServers: [],
-    })
-
-    if (result === null || result === undefined) {
-      throw new Error(`Hermes could not load session ${sessionId}.`)
-    }
-
-    this.emitEvent({
-      type: 'raw',
-      payload: createDiagnosticPayload('session/load', result, { sessionId }),
-    })
-
-    this.sessionId = sessionId
-    this.activeMessageIds.clear()
-    this.scheduleHistoryFlush(3000)
-    this.historyMaxTimeout = setTimeout(() => {
-      if (this.loadingSessionHistory && this.historyTurns.length > 0) {
-        console.warn('[hermes] history flush max timeout reached, forcing flush with', this.historyTurns.length, 'turns')
-        this.flushHistoryTurns()
-      }
-    }, 10000)
+    await this.loadSessionIntoBackend(sessionId, true)
   }
 
   async startNewSession(workspacePath?: string) {
@@ -371,6 +368,56 @@ export class HermesBridge extends EventEmitter {
       type: 'status',
       payload: { stage: 'ready', detail: `Hermes ACP session ready: ${this.sessionId}` },
     })
+  }
+
+  private async loadSessionIntoBackend(sessionId: string, replayHistory: boolean) {
+    const cwd = this.backend!.toBackendPath(this.workspacePath)
+    this.clearHistoryReplay()
+    this.loadingSessionHistory = true
+    this.suppressHistoryReplay = !replayHistory
+    this.historyTurns = []
+    this.historyTurnCounter = 0
+
+    let result: unknown
+    try {
+      result = await this.sendRequest('session/load', {
+        cwd,
+        sessionId,
+        mcpServers: [],
+      })
+    } catch (error) {
+      this.suppressHistoryReplay = false
+      this.clearHistoryReplay()
+      throw error
+    }
+
+    if (result === null || result === undefined) {
+      this.suppressHistoryReplay = false
+      this.clearHistoryReplay()
+      throw new Error(`Hermes could not load session ${sessionId}.`)
+    }
+
+    this.emitEvent({
+      type: 'raw',
+      payload: createDiagnosticPayload('session/load', result, { sessionId, replayHistory }),
+    })
+
+    this.sessionId = sessionId
+    this.activeMessageIds.clear()
+    this.suppressHistoryReplay = false
+
+    if (!replayHistory) {
+      this.clearHistoryReplay()
+      return
+    }
+
+    this.scheduleHistoryFlush(3000)
+    this.historyMaxTimeout = setTimeout(() => {
+      if (this.loadingSessionHistory && this.historyTurns.length > 0) {
+        console.warn('[hermes] history flush max timeout reached, forcing flush with', this.historyTurns.length, 'turns')
+        this.flushHistoryTurns()
+      }
+    }, 10000)
   }
 
   private async startBackend() {
@@ -731,8 +778,10 @@ export class HermesBridge extends EventEmitter {
       const text = normalizeMaybeText(extractAcpText(updateRecord.content) ?? undefined, 'assistant')
       if (text) {
         if (this.isReplayMode()) {
-          this.pushHistoryUserTurn(messageId, text)
-          this.scheduleHistoryFlush()
+          if (!this.suppressHistoryReplay) {
+            this.pushHistoryUserTurn(messageId, text)
+            this.scheduleHistoryFlush()
+          }
           return
         }
 
@@ -752,8 +801,10 @@ export class HermesBridge extends EventEmitter {
       }
 
       if (this.isReplayMode()) {
-        this.pushHistoryAssistantChunk(messageId, delta)
-        this.scheduleHistoryFlush()
+        if (!this.suppressHistoryReplay) {
+          this.pushHistoryAssistantChunk(messageId, delta)
+          this.scheduleHistoryFlush()
+        }
         return
       }
 
@@ -788,8 +839,10 @@ export class HermesBridge extends EventEmitter {
         },
       }
       if (this.isReplayMode()) {
-        this.pushHistoryTool(event)
-        this.scheduleHistoryFlush()
+        if (!this.suppressHistoryReplay) {
+          this.pushHistoryTool(event)
+          this.scheduleHistoryFlush()
+        }
         return
       }
 
@@ -809,8 +862,10 @@ export class HermesBridge extends EventEmitter {
         },
       }
       if (this.isReplayMode()) {
-        this.pushHistoryTool(event)
-        this.scheduleHistoryFlush()
+        if (!this.suppressHistoryReplay) {
+          this.pushHistoryTool(event)
+          this.scheduleHistoryFlush()
+        }
         return
       }
 

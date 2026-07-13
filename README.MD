@@ -13,6 +13,7 @@ Hermes Desktop Agent 是一个基于 Electron 的 Hermes 桌面助手。当前�
 - 和 Hermes 进行桌面对话。
 - 加载、恢复和继续历史 session。
 - 查看和操作当前工作区文件。
+- 在工作台标签页中启动并预览前端项目。
 - 使用 Hermes 内置命令、skills、工具调用和多轮任务能力。
 - 管理模型供应商、Base URL、API Mode、模型 ID 和 API Key。
 - 安装、启用和调试本地 MOD。
@@ -197,6 +198,20 @@ hermes model
 ```
 
 API Key 由 Hermes 配置保存；桌面端只会显示脱敏后的 Key 状态。
+
+## 项目预览
+
+点击右侧“上下文与文件”标题栏中的预览按钮，会新建一个可拖动和分屏的“项目预览”标签页。
+
+预览页支持：
+
+- 自动识别当前工作区中的 Vite、Next.js、Astro、React Scripts、Angular、Vue CLI 等开发脚本。
+- 对包含 `index.html` 的项目启动内置静态文件服务器。
+- 启动、停止和查看开发服务器日志。
+- 使用地址栏访问本机 `localhost` / `127.0.0.1` 服务。
+- 自动检测 macOS 或 Windows 上已安装的主流浏览器，并选择其中一个打开当前预览。
+
+为了避免项目页面跳转到不受信任的网站，内嵌预览只允许本机回环地址。开发服务器命令必须来自当前工作区的 `package.json`，应用退出时会自动停止由预览页启动的服务器。
 
 ## MOD 使用
 

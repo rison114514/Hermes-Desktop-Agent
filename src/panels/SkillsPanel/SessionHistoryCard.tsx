@@ -74,12 +74,14 @@ export function SessionHistoryCard() {
       const result = await window.hermesDesktop.createSession(tabName, session.cwd)
       const tabId = result?.id ?? activeTabId ?? 'default'
 
-      // Register the new tab in the frontend session store so the TabBar
+      // Register the new tab in the frontend session store so the workbench
       // renders it. addSession also sets activeId atomically.
       // We use getState() inside the async handler to avoid stale-closure
       // issues (same pattern as handleNewSession in SkillsPanel/index.tsx).
       useSessionStore.getState().addSession({
         id: tabId,
+        kind: 'session',
+        sessionId: tabId,
         name: result?.name ?? tabName,
         cwd: result?.cwd ?? session.cwd,
       })

@@ -21,6 +21,9 @@ import { readWindowState, writeWindowState } from './window-state.js'
 import { isPathInside } from './workspace-security.js'
 import { readWorkspaceState, writeWorkspaceState } from './workspace-state.js'
 import { readWorkspaceDirectory, type WorkspaceFileNode } from './workspace-tree.js'
+import { PreviewManager, isAllowedPreviewUrl } from './preview-manager.js'
+import { detectInstalledBrowsers, openInBrowser } from './browser-discovery.js'
+import { createSkillsCatalogPrompt, readHermesSkills, skillsFingerprint, type HermesSkillSnapshot } from './hermes-skills.js'
 import {
   getWindowsInteropSnapshot,
   openPathWithDefaultApp,
@@ -37,6 +40,7 @@ const __dirname = path.dirname(__filename)
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const hermesBridge = new HermesBridge()
+const previewManager = new PreviewManager()
 hermesBridge.setPermissionHandler((payload) => requestHermesPermission(payload, 'default'))
 const pendingPermissionRequests = new Map<string, (outcome: HermesPermissionOutcome) => void>()
 let permissionRequestSequence = 0
@@ -84,14 +88,6 @@ type HermesFetchModelsRequest = {
   provider?: string
   baseUrl?: string
   apiKey?: string
-}
-
-type HermesSkillSnapshot = {
-  id: string
-  name: string
-  category: string
-  description: string
-  enabled: boolean
 }
 
 type CreateWorktreeOptions = {
@@ -172,7 +168,21 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
+  })
+
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    if (!isAllowedPreviewUrl(params.src)) {
+      event.preventDefault()
+      return
+    }
+    delete webPreferences.preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    webPreferences.webSecurity = true
+    webPreferences.allowRunningInsecureContent = false
   })
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL
@@ -301,14 +311,25 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return
+  contents.on('will-navigate', (event, url) => {
+    if (!isAllowedPreviewUrl(url)) event.preventDefault()
+  })
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+})
+
 app.whenReady().then(async () => {
+  process.env.HERMES_DESKTOP_PYTHONPATH = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime', 'python')
+    : path.join(app.getAppPath(), 'runtime', 'python')
   await restoreWorkspaceRoot()
   prepareModEnvironment()
   // Sync bridge workspace path before starting — prevents an unnecessary
   // stop/restart cycle if the persisted workspace differs from process.cwd().
   hermesBridge.initWorkspacePath(workspaceRoot)
 
-  // Register the default tab BEFORE creating the window so the TabBar
+  // Register the default tab BEFORE creating the window so the workbench
   // picks it up on its very first poll. The bridge starts in background
   // and the tab updates once the ACP handshake completes.
   sessionManager.registerSession('default', '主会话', workspaceRoot, hermesBridge)
@@ -388,6 +409,7 @@ function beginShutdown() {
   isQuitting = true
   globalShortcut.unregisterAll()
   if (_todoPollTimer) clearInterval(_todoPollTimer)
+  void previewManager.stopAll()
   if (_discPollTimer) clearInterval(_discPollTimer)
   // Call onDisable for all enabled MODs so they can save state
   for (const [, instance] of modInstances) {
@@ -417,6 +439,7 @@ function getActiveBridge(): HermesBridge {
 // Sessions that already received the composed mod guidance injection. Keyed by
 // the resolved session id, so each new/loaded session gets the guidance once.
 const bridgeInjectedSessions = new Set<string>()
+const skillCatalogFingerprints = new Map<string, string>()
 
 // Call a mod's raw IPC handler directly (modInstances keeps the un-serialized
 // exports, so the handler functions are intact). Returns null if unavailable.
@@ -525,9 +548,12 @@ async function syncModBridgeNow(): Promise<void> {
 ipcMain.handle('hermes:send-message', async (_event, message: string, sessionId?: string) => {
   // Run MOD onUserMessage hooks before sending
   let processed = message
-  for (const [, hooks] of modHooks) {
-    if (hooks.onUserMessage) {
-      try { processed = hooks.onUserMessage(processed) } catch { /* skip broken hooks */ }
+  const isSlashCommand = message.trimStart().startsWith('/')
+  if (!isSlashCommand) {
+    for (const [, hooks] of modHooks) {
+      if (hooks.onUserMessage) {
+        try { processed = hooks.onUserMessage(processed) } catch { /* skip broken hooks */ }
+      }
     }
   }
 
@@ -536,6 +562,21 @@ ipcMain.handle('hermes:send-message', async (_event, message: string, sessionId?
   const todoApplied = await applyTodoCommands()
   const discApplied = await applyDisciplineCommands()
   await syncModBridgeNow()
+
+  const installedSkills = await readHermesSkillsSnapshot()
+  const skillsKey = sessionId || sessionManager.activeSession?.id || 'default'
+  const fingerprint = skillsFingerprint(installedSkills)
+  if (skillCatalogFingerprints.get(skillsKey) !== fingerprint) {
+    const catalogPrompt = createSkillsCatalogPrompt(installedSkills)
+    if (catalogPrompt && !isSlashCommand) {
+      processed = `${catalogPrompt}\n\n---\n\n${processed}`
+      skillCatalogFingerprints.set(skillsKey, fingerprint)
+    }
+    mainWindow?.webContents.send('hermes:event', {
+      type: 'skills:updated',
+      payload: installedSkills,
+    } satisfies HermesBridgeEvent)
+  }
 
   // Notify the renderer so UI panels can re-fetch updated lists.
   if (todoApplied > 0) {
@@ -548,7 +589,7 @@ ipcMain.handle('hermes:send-message', async (_event, message: string, sessionId?
   // Inject the composed mod guidance once per session, so the agent is told the
   // bridge files / hermes-mods skills exist even if it hasn't browsed skills.
   const injectKey = sessionId || sessionManager.activeSession?.id || 'default'
-  if (!bridgeInjectedSessions.has(injectKey)) {
+  if (!processed.trimStart().startsWith('/') && !bridgeInjectedSessions.has(injectKey)) {
     const guidance = composeModSystemPrompt()
     if (guidance) processed = `${guidance}\n\n---\n\n${processed}`
     bridgeInjectedSessions.add(injectKey)
@@ -860,6 +901,7 @@ ipcMain.handle('mods:toggle', async (_event, modName: string, enabled: boolean) 
     }
     if (mod.exports) {
       const safe: Record<string, unknown> = {}
+      if (mod.exports.tabs) safe.tabs = mod.exports.tabs
       if (mod.exports.panels) safe.panels = mod.exports.panels
       if (mod.exports.skills) safe.skills = mod.exports.skills
       if (mod.exports.commands) safe.commands = mod.exports.commands
@@ -919,10 +961,10 @@ ipcMain.handle('mods:persona-switch', async (_event, personaId: string) => {
 
 ipcMain.handle('workspace:create-worktree', async (_event, options?: CreateWorktreeOptions) => {
   const worktree = await createHermesWorktree(workspaceRoot, workspaceRoot, options)
-  workspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)
+  const nextWorkspaceRoot = workspaceHostPathFromHermesCwd(worktree.path)
   const bridge = getActiveBridge()
-  // Soft switch — preserve the active session/conversation
-  bridge.updateWorkspace(workspaceRoot)
+  await bridge.updateWorkspace(nextWorkspaceRoot)
+  workspaceRoot = nextWorkspaceRoot
   sessionManager.updateActive({ cwd: workspaceRoot })
   queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return {
@@ -938,12 +980,10 @@ ipcMain.handle('workspace:list-worktrees', async () => {
 ipcMain.handle('workspace:switch-worktree', async (_event, worktreePath: string) => {
   const nextWorkspaceRoot = workspaceHostPathFromHermesCwd(worktreePath)
   await assertWorkspaceExists(nextWorkspaceRoot)
-  workspaceRoot = nextWorkspaceRoot
   const bridge = getActiveBridge()
-  await bridge.startNewSession(workspaceRoot)
-  currentSessionTitle = null
-  bridgeInjectedSessions.clear()
-  sessionManager.updateActive({ cwd: workspaceRoot, title: null })
+  await bridge.updateWorkspace(nextWorkspaceRoot)
+  workspaceRoot = nextWorkspaceRoot
+  sessionManager.updateActive({ cwd: workspaceRoot })
   queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
 })
@@ -968,9 +1008,9 @@ ipcMain.handle('workspace:switch-root', async (_event, hostPath: string) => {
 // context while only updating the workspace directory and file tree.
 ipcMain.handle('workspace:soft-switch', async (_event, hostPath: string) => {
   await assertWorkspaceExists(hostPath)
-  workspaceRoot = hostPath
   const bridge = getActiveBridge()
-  bridge.updateWorkspace(workspaceRoot)
+  await bridge.updateWorkspace(hostPath)
+  workspaceRoot = hostPath
   sessionManager.updateActive({ cwd: workspaceRoot })
   queuePersistWorkspaceRoot(bridge.getSessionId() ?? undefined)
   return createWorkspaceSnapshot()
@@ -982,6 +1022,50 @@ ipcMain.handle('workspace:select-worktree-directory', async () => {
 
 ipcMain.handle('workspace:get-snapshot', async () => {
   return createWorkspaceSnapshot()
+})
+
+ipcMain.handle('preview:list-configurations', async (_event, requestedWorkspace?: string) => {
+  const previewWorkspace = resolvePreviewWorkspace(requestedWorkspace)
+  return previewManager.list(previewWorkspace)
+})
+
+ipcMain.handle('preview:start', async (_event, requestedWorkspace: string | undefined, configurationId: string) => {
+  try {
+    const previewWorkspace = resolvePreviewWorkspace(requestedWorkspace)
+    return { ok: true, status: await previewManager.start(previewWorkspace, configurationId) }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '启动预览失败。' }
+  }
+})
+
+ipcMain.handle('preview:get-status', async (_event, requestedWorkspace: string | undefined, configurationId: string) => {
+  try {
+    const previewWorkspace = resolvePreviewWorkspace(requestedWorkspace)
+    return { ok: true, status: previewManager.status(previewWorkspace, configurationId) }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '读取预览状态失败。' }
+  }
+})
+
+ipcMain.handle('preview:stop', async (_event, requestedWorkspace: string | undefined, configurationId: string) => {
+  try {
+    const previewWorkspace = resolvePreviewWorkspace(requestedWorkspace)
+    return { ok: true, status: await previewManager.stop(previewWorkspace, configurationId) }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '停止预览失败。' }
+  }
+})
+
+ipcMain.handle('preview:list-browsers', async () => detectInstalledBrowsers())
+
+ipcMain.handle('preview:open-browser', async (_event, url: string, browserId: string) => {
+  if (!isAllowedPreviewUrl(url)) return { ok: false, error: '只能打开本机预览地址。' }
+  try {
+    await openInBrowser(url, browserId)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '打开浏览器失败。' }
+  }
 })
 
 ipcMain.handle('workspace:read-directory', async (_event, directoryPath: string) => {
@@ -1740,6 +1824,14 @@ function resolveWorkspaceItemPath(itemPath: string) {
   }
 }
 
+function resolvePreviewWorkspace(requestedWorkspace?: string) {
+  const candidate = path.resolve(requestedWorkspace || workspaceRoot)
+  if (!isPathInside(workspaceRoot, candidate)) {
+    throw new Error('只能预览当前工作区中的项目。')
+  }
+  return candidate
+}
+
 function normalizeRenameTarget(nextName: string) {
   const safeName = nextName.trim()
   if (!safeName) {
@@ -2148,36 +2240,5 @@ async function readHermesConfigSnapshot(): Promise<HermesConfigSnapshot> {
 
 async function readHermesSkillsSnapshot(): Promise<HermesSkillSnapshot[]> {
   const backend = getBackendProvider()
-  const skillsRoot = path.join(backend.hermesHome, 'skills')
-
-  try {
-    const categories = await readdir(skillsRoot, { withFileTypes: true })
-    const ids: string[] = []
-
-    for (const category of categories) {
-      if (!category.isDirectory() || category.name.startsWith('.')) continue
-      const categoryPath = path.join(skillsRoot, category.name)
-      const skills = await readdir(categoryPath, { withFileTypes: true }).catch(() => [])
-      for (const skill of skills) {
-        if (skill.isDirectory() && !skill.name.startsWith('.')) {
-          ids.push(`${category.name}/${skill.name}`)
-        }
-      }
-    }
-
-    return ids
-      .map((id) => {
-        const [category, name] = id.split('/')
-        return {
-          id,
-          name: name ?? id,
-          category: category ?? 'skills',
-          description: `来自本机 Hermes skills/${category ?? ''} 分类的已安装技能。`,
-          enabled: true,
-        }
-      })
-      .sort((left, right) => left.name.localeCompare(right.name))
-  } catch {
-    return []
-  }
+  return readHermesSkills(path.join(backend.hermesHome, 'skills')).catch(() => [])
 }

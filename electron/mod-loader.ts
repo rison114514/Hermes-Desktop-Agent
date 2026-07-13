@@ -19,6 +19,7 @@ interface ModManifest {
 }
 
 interface ModExports {
+  tabs?: Array<{ id: string; title: string; rendererType: string; icon?: string; payload?: Record<string, unknown> }>
   skills?: Array<{ id: string; name: string; description: string; enabled?: boolean; category?: string }>
   commands?: Array<{ id: string; name: string; description: string }>
   panels?: Record<string, unknown>
@@ -57,6 +58,7 @@ async function safeImport(filePath: string): Promise<unknown> {
 function serializeExports(exports?: ModExports): ModExports | undefined {
   if (!exports) return undefined
   const safe: ModExports = {}
+  if (exports.tabs) safe.tabs = exports.tabs
   if (exports.panels) safe.panels = exports.panels
   if (exports.skills) safe.skills = exports.skills
   if (exports.commands) safe.commands = exports.commands
