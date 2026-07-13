@@ -20,6 +20,21 @@ $env:HERMES_TEXT_ENCODING = "utf-8"
 if ([string]::IsNullOrWhiteSpace($env:HERMES_ACP_PERMISSION_TIMEOUT_SECONDS)) {
   $env:HERMES_ACP_PERMISSION_TIMEOUT_SECONDS = "315360000"
 }
+if ([string]::IsNullOrWhiteSpace($env:npm_config_registry)) {
+  $env:npm_config_registry = "https://registry.npmmirror.com"
+}
+if ([string]::IsNullOrWhiteSpace($env:npm_config_disturl)) {
+  $env:npm_config_disturl = "https://npmmirror.com/mirrors/node"
+}
+if ([string]::IsNullOrWhiteSpace($env:ELECTRON_MIRROR)) {
+  $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+}
+if ([string]::IsNullOrWhiteSpace($env:PLAYWRIGHT_DOWNLOAD_HOST)) {
+  $env:PLAYWRIGHT_DOWNLOAD_HOST = "https://npmmirror.com/mirrors/playwright"
+}
+if ([string]::IsNullOrWhiteSpace($env:PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT)) {
+  $env:PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT = "180000"
+}
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
@@ -145,6 +160,54 @@ function Invoke-Npm {
   }
 }
 
+function Resolve-NativeHermesExecutable {
+  $command = Get-Command "hermes" -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+
+  $candidates = @(
+    "$env:LOCALAPPDATA\hermes\venv\Scripts\hermes.exe",
+    "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\hermes.exe"
+  )
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+
+  return $null
+}
+
+function Test-NativeHermesAcp {
+  param([string]$HermesExe)
+
+  if ([string]::IsNullOrWhiteSpace($HermesExe)) {
+    return $false
+  }
+
+  try {
+    & $HermesExe acp --check 2>&1 | Out-Null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Invoke-NativeHermesSetup {
+  $setupScript = Join-Path $repoRoot "scripts\setup-windows-env.ps1"
+  if (-not (Test-Path $setupScript)) {
+    throw "Environment setup script was not found: $setupScript"
+  }
+
+  $powerShellExe = (Get-Process -Id $PID).Path
+  Write-Host "    Starting one-click Hermes environment setup..." -ForegroundColor Yellow
+  & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $setupScript
+  if ($LASTEXITCODE -ne 0) {
+    throw "Hermes environment setup failed with exit code $LASTEXITCODE."
+  }
+}
+
 function Test-WindowsNpmDependencies {
   $stampPath = Join-Path $repoRoot ".hermes-install-stamp"
   if (-not (Test-Path $stampPath)) {
@@ -179,7 +242,9 @@ function Test-WindowsNpmDependencies {
 }
 
 function Install-WindowsNpmDependencies {
-  Invoke-Step "Installing Windows npm dependencies" {
+  Invoke-Step "Installing Windows npm dependencies with mirror" {
+    Write-Host "    npm registry: $env:npm_config_registry"
+    Write-Host "    Electron mirror: $env:ELECTRON_MIRROR"
     $stampPath = Join-Path $repoRoot ".hermes-install-stamp"
     Remove-Item $stampPath -Force -ErrorAction SilentlyContinue
 
@@ -668,34 +733,19 @@ echo "    OK: Approvals timeout set to 10 years (direct YAML)"
 } else {
   # ---- Native Windows backend ----
   Invoke-Step "Checking native Hermes installation" {
-    $hermesCmd = Get-Command "hermes" -ErrorAction SilentlyContinue
-    $hermesExe = $null
-    if (-not $hermesCmd) {
-      # Try known install locations before failing
-      $candidates = @(
-        "$env:LOCALAPPDATA\hermes\venv\Scripts\hermes.exe",
-        "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\hermes.exe"
-      )
-      $found = $null
-      foreach ($c in $candidates) {
-        if (Test-Path $c) { $found = $c; break }
-      }
-      if ($found) {
-        $env:PATH = "$(Split-Path $found -Parent);$env:PATH"
-        $hermesExe = $found
-        Write-Host "    OK: Hermes found at $found" -ForegroundColor Green
-      } else {
-        throw "Hermes Agent is not installed. Run setup-hermes-environment.cmd first, or install manually: pip install 'hermes-agent[acp]'"
-      }
-    } else {
-      $hermesExe = $hermesCmd.Source
-      Write-Host "    OK: $(& hermes --version 2>&1)" -ForegroundColor Green
+    $hermesExe = Resolve-NativeHermesExecutable
+    if (-not (Test-NativeHermesAcp $hermesExe)) {
+      Write-Host "    Hermes or ACP is unavailable; configuring automatically." -ForegroundColor Yellow
+      Invoke-NativeHermesSetup
+      $hermesExe = Resolve-NativeHermesExecutable
     }
 
-    & $hermesExe acp --check 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      throw "Hermes ACP dependencies are missing. Run setup-hermes-environment.cmd to repair the native Hermes installation."
+    if (-not (Test-NativeHermesAcp $hermesExe)) {
+      throw "Hermes ACP is still unavailable after automatic environment setup."
     }
+
+    $env:PATH = "$(Split-Path $hermesExe -Parent);$env:PATH"
+    Write-Host "    OK: $(& $hermesExe --version 2>&1)" -ForegroundColor Green
     Write-Host "    OK: Hermes ACP dependencies are installed" -ForegroundColor Green
   }
 

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+app_version="$(node -p "require('$repo_root/package.json').version")"
 app_name="Hermes Desktop Agent Launcher"
 app_dir="$repo_root/release-build/$app_name.app"
 contents_dir="$app_dir/Contents"
@@ -10,7 +11,7 @@ resources_dir="$contents_dir/Resources"
 
 mkdir -p "$macos_dir" "$resources_dir"
 
-cat > "$contents_dir/Info.plist" <<'PLIST'
+cat > "$contents_dir/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -30,9 +31,9 @@ cat > "$contents_dir/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.1</string>
+  <string>$app_version</string>
   <key>CFBundleVersion</key>
-  <string>0.1.1</string>
+  <string>$app_version</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
 </dict>

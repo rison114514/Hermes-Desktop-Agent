@@ -1,6 +1,6 @@
 {
   "name": "hermes-desktop-agent",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Cross-platform desktop assistant for Hermes ACP.",
@@ -16,6 +16,7 @@
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable zip --x64",
+    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg --arm64 --x64",
     "create:mac-launcher": "./scripts/create-macos-launcher.sh",
     "test:core": "npm run build:main && node scripts/verify-core.mjs",
     "preview": "vite preview",
@@ -49,6 +50,14 @@
         ]
       },
       {
+        "from": "node_modules/ssh2",
+        "to": "mods/hermes-ssh/node_modules/ssh2",
+        "filter": [
+          "**/*",
+          "!lib/protocol/crypto/build/**"
+        ]
+      },
+      {
         "from": "runtime",
         "to": "runtime",
         "filter": [
@@ -63,6 +72,16 @@
       "icon": "assets/icon.ico",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "signAndEditExecutable": false,
+      "extraFiles": [
+        {
+          "from": "setup-hermes-environment.cmd",
+          "to": "setup-hermes-environment.cmd"
+        },
+        {
+          "from": "scripts/setup-windows-env.ps1",
+          "to": "scripts/setup-windows-env.ps1"
+        }
+      ],
       "target": [
         {
           "target": "portable",
@@ -79,11 +98,18 @@
       ]
     },
     "mac": {
-      "icon": "assets/icon.png",
+      "icon": "assets/icon-mac.png",
+      "identity": "-",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "setup-hermes-environment.command",
+          "to": "setup/setup-hermes-environment.command"
+        }
+      ],
       "target": [
         {
-          "target": "dir",
+          "target": "dmg",
           "arch": [
             "arm64",
             "x64"

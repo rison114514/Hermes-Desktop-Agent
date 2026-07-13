@@ -4,11 +4,12 @@
 # then configures it for use with Hermes Desktop Agent.
 #
 # Usage from repo root:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-native.ps1
-# Or just double-click setup-native.cmd
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-windows-env.ps1
+# Or just double-click setup-hermes-environment.cmd
 
 param(
-  [switch]$SkipApprovals
+  [switch]$SkipApprovals,
+  [switch]$InstallBrowserTools
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +28,25 @@ $OutputEncoding = $utf8NoBom
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $env:LC_ALL = "en_US.UTF-8"
+
+# Use domestic mirrors for every npm/npx child process started by the
+# official Hermes installer. Browser tools are optional, but these settings
+# also make a later Playwright installation use the domestic binary mirror.
+if ([string]::IsNullOrWhiteSpace($env:npm_config_registry)) {
+  $env:npm_config_registry = "https://registry.npmmirror.com"
+}
+if ([string]::IsNullOrWhiteSpace($env:npm_config_disturl)) {
+  $env:npm_config_disturl = "https://npmmirror.com/mirrors/node"
+}
+if ([string]::IsNullOrWhiteSpace($env:ELECTRON_MIRROR)) {
+  $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+}
+if ([string]::IsNullOrWhiteSpace($env:PLAYWRIGHT_DOWNLOAD_HOST)) {
+  $env:PLAYWRIGHT_DOWNLOAD_HOST = "https://npmmirror.com/mirrors/playwright"
+}
+if ([string]::IsNullOrWhiteSpace($env:PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT)) {
+  $env:PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT = "180000"
+}
 
 function Invoke-Step {
   param(
@@ -155,6 +175,91 @@ function Repair-HermesAcp {
   throw "Hermes ACP dependencies could not be installed. Try again later or run: `"$pythonExe`" -m pip install --upgrade `"hermes-agent[acp]`""
 }
 
+function Resolve-PowerShellHost {
+  try {
+    $currentHost = (Get-Process -Id $PID).Path
+    if ($currentHost -and (Test-Path $currentHost)) {
+      return $currentHost
+    }
+  } catch {}
+
+  $windowsPowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+  if (Test-Path $windowsPowerShell) {
+    return $windowsPowerShell
+  }
+
+  $pwsh = Get-Command "pwsh.exe" -ErrorAction SilentlyContinue
+  if ($pwsh) {
+    return $pwsh.Source
+  }
+
+  throw "A PowerShell host could not be resolved for the Hermes installer."
+}
+
+function Invoke-HermesInstallerStage {
+  param(
+    [string]$InstallerPath,
+    [string]$Name
+  )
+
+  Write-Info "Official installer stage: $Name"
+  $powerShellExe = Resolve-PowerShellHost
+  & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $InstallerPath -Stage $Name -NonInteractive
+  if ($LASTEXITCODE -ne 0) {
+    throw "Hermes installer stage '$Name' failed with exit code $LASTEXITCODE."
+  }
+}
+
+function Invoke-HermesCoreInstall {
+  param([string]$InstallerPath)
+
+  $powerShellExe = Resolve-PowerShellHost
+  $manifestOutput = & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $InstallerPath -Manifest
+  if ($LASTEXITCODE -ne 0) {
+    throw "The downloaded Hermes installer does not support the required stage protocol."
+  }
+
+  try {
+    $manifest = ($manifestOutput | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "The Hermes installer returned an invalid stage manifest: $_"
+  }
+
+  $availableStages = @($manifest.stages | ForEach-Object { $_.name })
+  $stages = @(
+    "uv",
+    "python",
+    "git"
+  )
+
+  if ($InstallBrowserTools) {
+    $stages += "node"
+  }
+
+  $stages += @(
+    "repository",
+    "venv",
+    "dependencies"
+  )
+
+  if ($InstallBrowserTools) {
+    $stages += "node-deps"
+  }
+
+  $stages += @(
+    "path",
+    "config-templates",
+    "bootstrap-marker"
+  )
+
+  foreach ($stage in $stages) {
+    if ($availableStages -notcontains $stage) {
+      throw "The Hermes installer is missing required stage '$stage'."
+    }
+    Invoke-HermesInstallerStage -InstallerPath $InstallerPath -Name $stage
+  }
+}
+
 # ---- Header ----
 
 Write-Host "============================================" -ForegroundColor Magenta
@@ -163,6 +268,12 @@ Write-Host "============================================" -ForegroundColor Magen
 Write-Host ""
 Write-Host "This script installs & configures Hermes Agent on Windows." -ForegroundColor White
 Write-Host "No WSL / Docker / Hyper-V required." -ForegroundColor White
+Write-Host "npm/npx downloads use domestic mirrors." -ForegroundColor White
+if ($InstallBrowserTools) {
+  Write-Host "Optional Hermes browser tools will also be installed." -ForegroundColor White
+} else {
+  Write-Host "Optional Playwright Chromium is skipped to keep setup fast and reliable." -ForegroundColor White
+}
 Write-Host ""
 
 # ---- Pre-check: is Hermes already installed? ----
@@ -186,7 +297,7 @@ Invoke-Step "Checking for existing Hermes installation" {
 
 # ---- Step 1: Install (only if not already installed) ----
 
-if (-not $script:HermesExe) {
+if (-not $script:HermesExe -or $InstallBrowserTools) {
   Invoke-Step "Installing Hermes Agent (official Windows installer)" {
 
     $installUrl = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"
@@ -233,20 +344,17 @@ if (-not $script:HermesExe) {
     $installerContent = $installerContent.Replace($oldCall, $newCall)
     [System.IO.File]::WriteAllText($installerPath, $installerContent, $utf8NoBom)
 
-    Write-Info "Running installer (this may take several minutes)..."
+    Write-Info "Running core installer stages (this may take several minutes)..."
+    Write-Info "npm registry: $env:npm_config_registry"
+    Write-Info "Playwright mirror: $env:PLAYWRIGHT_DOWNLOAD_HOST"
     Write-Host ""
 
-    & $installerPath
-    $installExit = $LASTEXITCODE
+    Invoke-HermesCoreInstall -InstallerPath $installerPath
 
     Write-Host ""
 
     # Clean up temp installer
     Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-
-    if ($installExit -ne 0 -and $installExit -ne $null) {
-      Write-Warn "Installer exited with code $installExit (this may be normal)"
-    }
 
     # Re-resolve hermes after install
     $found = Resolve-HermesExe
@@ -313,6 +421,9 @@ Write-Host ""
 
 if ($script:HermesExe) {
   Write-Host "All done! Hermes is ready to use." -ForegroundColor White
+  if (-not $InstallBrowserTools) {
+    Write-Host "Playwright Chromium was not installed; this does not affect ACP or desktop sessions." -ForegroundColor Gray
+  }
   Write-Host ""
   Write-Host "Next steps:" -ForegroundColor White
   Write-Host "  1. Start Hermes Desktop: scripts\start-windows.ps1 -Backend native" -ForegroundColor Gray

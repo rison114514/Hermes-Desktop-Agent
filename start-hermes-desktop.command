@@ -55,20 +55,23 @@ require_command() {
 
 require_command node "Install Node.js 20+ from https://nodejs.org/ or Homebrew."
 require_command npm "npm is normally installed with Node.js."
-require_command hermes "Run setup-hermes-environment.command first to install Hermes Agent."
 
-if ! hermes acp --check >/dev/null 2>&1; then
+if ! command -v hermes >/dev/null 2>&1 || ! hermes acp --check >/dev/null 2>&1; then
   echo
-  echo "==> Hermes ACP dependencies are missing; running setup repair"
-  ./setup-hermes-environment.command
+  echo "==> Hermes or ACP is unavailable; running one-click environment setup"
+  if [ ! -f "./setup-hermes-environment.command" ]; then
+    echo "Environment setup script was not found: $PWD/setup-hermes-environment.command"
+    exit 1
+  fi
+  /bin/zsh ./setup-hermes-environment.command
   if [ -x ".hermes-runtime/hermes-venv/bin/hermes" ]; then
     export PATH="$PWD/.hermes-runtime/hermes-venv/bin:$PATH"
     hash -r
   fi
-  if ! hermes acp --check >/dev/null 2>&1; then
+  if ! command -v hermes >/dev/null 2>&1 || ! hermes acp --check >/dev/null 2>&1; then
     echo
     echo "Hermes ACP is still unavailable."
-    echo "Please rerun setup-hermes-environment.command and check the pip output above."
+    echo "Check the setup output above, then run this launcher again."
     exit 1
   fi
 fi

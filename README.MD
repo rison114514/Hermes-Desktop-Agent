@@ -5,7 +5,7 @@ Hermes Desktop Agent 是一个基于 Electron 的 Hermes 桌面助手。当前�
 当前支持状态：
 
 - Windows：支持原生 Hermes Agent，支持源码启动；Release EXE 可作为普通用户推荐入口。
-- macOS：支持原生 Hermes Agent，支持源码启动；可生成轻量 `.app` 启动器，但目前不是签名/公证后的正式 macOS 安装包。
+- macOS：支持原生 Hermes Agent，支持源码启动，并提供可直接安装的 Apple Silicon / Intel DMG。
 - Linux：项目没有提供正式使用教程和启动脚本。
 
 它可以用于：
@@ -27,8 +27,8 @@ Hermes Desktop Agent 是一个基于 Electron 的 Hermes 桌面助手。当前�
 
 如果你只是想运行：
 
-- Windows 普通用户：先运行 `setup-hermes-environment.cmd`，然后使用 Release EXE 或双击 `start-hermes-desktop.cmd`。
-- macOS 普通用户：先运行 `setup-hermes-environment.command`，然后双击 `start-hermes-desktop.command`；也可以生成 `.app` 启动器。
+- Windows 普通用户：直接运行 Release EXE；缺少 Hermes 或 ACP 时，应用会提供“一键配置”。源码用户双击 `start-hermes-desktop.cmd` 也会自动配置。
+- macOS 普通用户：安装 DMG 后直接打开应用；缺少 Hermes 或 ACP 时会提供“一键配置”。源码用户也可双击 `start-hermes-desktop.command`。
 
 如果你是开发者：
 
@@ -38,9 +38,11 @@ Hermes Desktop Agent 是一个基于 Electron 的 Hermes 桌面助手。当前�
 
 ## Windows 使用教程
 
-### 1. 安装 Hermes Agent
+### 1. 一键配置 Hermes Agent
 
-首次使用前，双击或右键运行：
+Release EXE 已集成环境检测。首次启动时，如果 Hermes Agent 或 ACP 未就绪，点击“一键配置”，按照弹出的 PowerShell 窗口完成模型配置即可。配置成功后应用会自动重新连接。
+
+ZIP 发布包还会附带以下脚本，可用于手动安装或修复：
 
 ```text
 setup-hermes-environment.cmd
@@ -49,10 +51,21 @@ setup-hermes-environment.cmd
 该脚本会：
 
 - 安装/检查原生 Windows 版 Hermes Agent。
+- 检查 `hermes acp --check`，缺少 ACP 依赖时自动使用国内 PyPI 镜像修复。
 - 引导执行 Hermes 模型配置。
+- 为 npm、npx、node-gyp 头文件、Electron 和 Playwright 下载配置国内镜像。
+- 默认跳过可选的 Playwright Chromium，避免安装 Hermes 时卡在大文件下载；这不影响 ACP 和桌面会话。
 - 不安装 WSL，不依赖 Docker / Hyper-V。
 
-如果脚本提示需要重新打开终端或重启 Windows，请按提示操作后再次运行 `setup-hermes-environment.cmd`。
+如果确实需要 Hermes 自带的 `browser_*` 工具，可以在 PowerShell 中执行：
+
+```powershell
+.\scripts\setup-windows-env.ps1 -InstallBrowserTools
+```
+
+该模式会从 npmmirror 下载 Playwright 浏览器文件，而不是直接访问 `cdn.playwright.dev`。
+
+如果脚本提示需要重新打开终端或重启 Windows，请按提示操作后再次运行 Release EXE 或 `setup-hermes-environment.cmd`。
 
 ### 2. 启动桌面助手
 
@@ -73,7 +86,7 @@ start-hermes-desktop.cmd
 源码启动会自动：
 
 - 检测 Node.js / npm。
-- 检测原生 Windows Hermes。
+- 自动安装或修复原生 Windows Hermes 与 ACP。
 - 安装 npm 依赖。
 - 构建前端和 Electron 主进程。
 - 启动桌面助手。
@@ -104,14 +117,22 @@ npm run dist:win
 
 ## macOS 使用教程
 
-### 1. 安装 Hermes Agent
+### 1. DMG 安装
 
-首次使用前，在项目目录运行：
+根据 Mac 处理器选择 `arm64`（Apple Silicon）或 `x64`（Intel）DMG，将应用拖入“应用程序”后打开。首次运行检测到 Hermes 或 ACP 缺失时，点击“一键配置”；运行时会安装到用户应用数据目录，更新应用不会删除该环境。
+
+当前 DMG 使用 ad-hoc 签名，尚未使用 Apple Developer ID 公证。其他 Mac 首次打开时可能需要在“系统设置 → 隐私与安全性”中选择“仍要打开”；要实现完全无提示的公开分发，需要配置 Apple 开发者证书和 notarization 凭据。
+
+### 2. 源码一键配置并启动
+
+首次使用时，在项目目录运行：
 
 ```bash
 chmod +x setup-hermes-environment.command start-hermes-desktop.command scripts/create-macos-launcher.sh
-./setup-hermes-environment.command
+./start-hermes-desktop.command
 ```
+
+启动脚本会先检查 Hermes Agent 与 ACP；缺失时自动调用 `setup-hermes-environment.command`，配置完成后继续构建和启动桌面端，无需分两步执行。
 
 该脚本会：
 
@@ -123,7 +144,7 @@ chmod +x setup-hermes-environment.command start-hermes-desktop.command scripts/c
 
 不要求预先安装 Homebrew、WSL、Docker 或系统 Python。
 
-### 2. 启动桌面助手
+### 3. 启动桌面助手
 
 源码启动：
 
@@ -134,7 +155,7 @@ chmod +x setup-hermes-environment.command start-hermes-desktop.command scripts/c
 启动脚本会：
 
 - 检查 Node.js 20+ 和 npm。
-- 检查 `hermes` 命令是否可用。
+- 自动安装或修复 Hermes 与 ACP。
 - 使用 `.npmrc` / npm 镜像安装依赖。
 - 使用 Electron 镜像下载或修复 Electron 运行时。
 - 构建并启动桌面助手。
@@ -145,7 +166,7 @@ chmod +x setup-hermes-environment.command start-hermes-desktop.command scripts/c
 https://nodejs.org/
 ```
 
-### 3. 创建 macOS `.app` 启动器
+### 4. 创建 macOS `.app` 启动器
 
 可以生成一个类似普通 macOS 应用的轻量启动器：
 
@@ -161,7 +182,7 @@ release-build/Hermes Desktop Agent Launcher.app
 
 注意：这个 `.app` 会调用仓库里的 `start-hermes-desktop.command`。它适合本地使用，但不是签名/公证后的正式发布安装包。
 
-### 4. macOS 常用命令
+### 5. macOS 常用命令
 
 ```bash
 ./setup-hermes-environment.command
@@ -173,6 +194,10 @@ release-build/Hermes Desktop Agent Launcher.app
 
 ```bash
 npm run create:mac-launcher
+```
+
+```bash
+npm run dist:mac
 ```
 
 ```bash
@@ -251,7 +276,7 @@ npm run test:core
 
 ## 常见问题
 
-- Windows 运行失败：先运行 `setup-hermes-environment.cmd`，确认原生 Hermes 可用。
+- Windows 运行失败：在 Release EXE 中选择“一键配置”，或手动运行发布包附带的 `setup-hermes-environment.cmd`。
 - Windows 源码启动失败：确认安装了 Windows 版 Node.js 20+，并重新打开终端。
 - macOS 安装 Hermes 很慢：重新运行 `setup-hermes-environment.command`，脚本会复用 `.hermes-runtime` 中已经下载成功的内容。
 - macOS Electron 下载或解压不完整：重新运行 `start-hermes-desktop.command`，脚本会优先从本地缓存修复 Electron 运行时。

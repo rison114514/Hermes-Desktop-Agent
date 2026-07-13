@@ -211,11 +211,9 @@ class WslBackendProvider implements BackendProvider {
 class NativeBackendProvider implements BackendProvider {
   readonly type: BackendType = 'native'
   readonly hermesHome: string
-  private readonly hermesExecutable: string
 
   constructor() {
     this.hermesHome = getNativeHermesHome()
-    this.hermesExecutable = getNativeHermesExecutable()
   }
 
   async spawnAcp(
@@ -242,7 +240,7 @@ class NativeBackendProvider implements BackendProvider {
       env.no_proxy = 'localhost,127.0.0.1,.local'
     }
 
-    return spawn(this.hermesExecutable, ['acp', '--accept-hooks'], {
+    return spawn(getNativeHermesExecutable(), ['acp', '--accept-hooks'], {
       cwd: workspacePath,
       stdio: 'pipe',
       windowsHide: true,
@@ -257,12 +255,13 @@ class NativeBackendProvider implements BackendProvider {
   async ensureHermesInstalled(_proxyConfig: ProxyConfig | null): Promise<void> {
     // ACP is the runtime used by the desktop app. `hermes --version` can pass
     // even when the optional ACP dependencies are missing.
+    const hermesExecutable = getNativeHermesExecutable()
     try {
-      await execFileAsync(this.hermesExecutable, ['acp', '--check'])
+      await execFileAsync(hermesExecutable, ['acp', '--check'])
       return
     } catch (error) {
       try {
-        await execFileAsync(this.hermesExecutable, ['--version'])
+        await execFileAsync(hermesExecutable, ['--version'])
       } catch {
         throw new Error(
           'Hermes Agent is not installed on this system. ' +
@@ -289,7 +288,7 @@ class NativeBackendProvider implements BackendProvider {
   }
 
   async execCommand(args: string[]): Promise<string> {
-    return execFileAsync(this.hermesExecutable, args)
+    return execFileAsync(getNativeHermesExecutable(), args)
   }
 
   async gitAvailable(): Promise<boolean> {
@@ -357,6 +356,11 @@ function getNativeHermesExecutable() {
     ]
     const installed = candidates.find((candidate) => existsSync(candidate))
     if (installed) return installed
+  }
+
+  if (process.platform === 'darwin' && process.env.HERMES_RUNTIME_DIR) {
+    const installed = path.join(process.env.HERMES_RUNTIME_DIR, 'hermes-venv', 'bin', 'hermes')
+    if (existsSync(installed)) return installed
   }
 
   return 'hermes'

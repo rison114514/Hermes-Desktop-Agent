@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, ipcMain, screen } from 'electron'
 import type { Event as ElectronEvent, OpenDialogOptions, WebContentsConsoleMessageEventParams } from 'electron'
-import { exec } from 'node:child_process'
+import { exec, spawn } from 'node:child_process'
 import { access, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -37,6 +37,10 @@ import {
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+if (process.platform === 'darwin' && app.isPackaged && !process.env.HERMES_RUNTIME_DIR) {
+  process.env.HERMES_RUNTIME_DIR = path.join(app.getPath('userData'), 'runtime')
+}
+
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const hermesBridge = new HermesBridge()
@@ -50,6 +54,7 @@ let lastSessionId: string | undefined
 let currentSessionTitle: string | null = null
 let shutdownStarted = false
 let currentProxyConfig: ProxyConfig | null = null
+let environmentSetupPromise: Promise<void> | null = null
 // Tracks the in-flight autoEnableMods() call. Mod IPC handlers and the data
 // each mod loads in onEnable() only exist once this resolves, so mods:scan
 // awaits it before returning — that way sidebar panels never render and fetch
@@ -93,6 +98,142 @@ type HermesFetchModelsRequest = {
 type CreateWorktreeOptions = {
   name?: string
   directory?: string
+}
+
+function shouldOfferEnvironmentSetup(error: unknown) {
+  if (!app.isPackaged || !['win32', 'darwin'].includes(process.platform)) return false
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('Hermes is not available') && (
+    message.includes('not installed')
+    || message.includes('ACP dependencies are missing')
+  )
+}
+
+function getBundledEnvironmentSetupScript() {
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(path.dirname(process.execPath), 'scripts', 'setup-windows-env.ps1'),
+        path.join(process.resourcesPath, 'setup', 'scripts', 'setup-windows-env.ps1'),
+      ]
+    : [path.join(process.resourcesPath, 'setup', 'setup-hermes-environment.command')]
+  return candidates.find((candidate) => existsSync(candidate)) ?? null
+}
+
+function runEnvironmentSetup(scriptPath: string) {
+  return new Promise<void>((resolve, reject) => {
+    const command = process.platform === 'win32'
+      ? path.join(
+          process.env.SystemRoot ?? 'C:\\Windows',
+          'System32',
+          'WindowsPowerShell',
+          'v1.0',
+          'powershell.exe',
+        )
+      : '/bin/zsh'
+    const args = process.platform === 'win32'
+      ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]
+      : [scriptPath]
+    const env = { ...process.env }
+    if (process.platform === 'darwin') {
+      env.HERMES_RUNTIME_DIR = process.env.HERMES_RUNTIME_DIR
+      env.HERMES_HOME = path.join(app.getPath('home'), 'Library', 'Application Support', 'hermes')
+    }
+
+    const child = spawn(command, args, {
+      windowsHide: false,
+      stdio: 'inherit',
+      env,
+    })
+
+    child.once('error', reject)
+    child.once('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Environment setup exited with code ${code ?? 'unknown'}.`))
+    })
+  })
+}
+
+async function offerEnvironmentSetup(error: unknown) {
+  if (!shouldOfferEnvironmentSetup(error)) return
+  if (environmentSetupPromise) return environmentSetupPromise
+
+  environmentSetupPromise = (async () => {
+    const setupScript = getBundledEnvironmentSetupScript()
+    if (!setupScript) {
+      await showMessageBox({
+        type: 'error',
+        title: '缺少环境配置脚本',
+        message: '应用中没有找到环境配置脚本。',
+        detail: '请重新下载完整发布包。',
+        buttons: ['确定'],
+      })
+      return
+    }
+
+    const prompt = await showMessageBox({
+      type: 'warning',
+      title: '需要配置 Hermes 环境',
+      message: 'Hermes Agent 或 ACP 尚未就绪。',
+      detail: process.platform === 'win32'
+        ? '点击“一键配置”后会打开 PowerShell 安装窗口。配置完成后，应用将自动重新连接。'
+        : '点击“一键配置”后会在应用后台下载 Hermes。配置完成后，应用将自动重新连接。',
+      buttons: ['一键配置', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (prompt.response !== 0) return
+
+    try {
+      await runEnvironmentSetup(setupScript)
+      hermesBridge.stop()
+      await warmUpHermesBridge()
+      await showMessageBox({
+        type: 'info',
+        title: '环境配置完成',
+        message: 'Hermes Agent 与 ACP 已就绪。',
+        buttons: ['开始使用'],
+      })
+    } catch (setupError) {
+      await showMessageBox({
+        type: 'error',
+        title: '环境配置失败',
+        message: 'Hermes 环境未能完成配置。',
+        detail: setupError instanceof Error ? setupError.message : String(setupError),
+        buttons: ['确定'],
+      })
+    }
+  })().finally(() => {
+    environmentSetupPromise = null
+  })
+
+  return environmentSetupPromise
+}
+
+async function showMessageBox(options: Electron.MessageBoxOptions) {
+  return mainWindow
+    ? dialog.showMessageBox(mainWindow, options)
+    : dialog.showMessageBox(options)
+}
+
+async function warmUpHermesBridge() {
+  await hermesBridge.start()
+  sessionManager.updateSession('default', { cwd: workspaceRoot, title: currentSessionTitle })
+
+  if (lastSessionId && hermesBridge.getSessionId() !== lastSessionId) {
+    try {
+      await hermesBridge.loadSession(lastSessionId, workspaceRoot)
+      currentSessionTitle = await lookupSessionTitle(lastSessionId)
+      sessionManager.updateSession('default', { cwd: workspaceRoot, title: currentSessionTitle })
+      queuePersistWorkspaceRoot(lastSessionId)
+      const snapshot = await createWorkspaceSnapshot()
+      mainWindow?.webContents.send('hermes:event', {
+        type: 'workspace:snapshot',
+        payload: snapshot,
+      } satisfies HermesBridgeEvent)
+    } catch (resumeError) {
+      console.warn('[hermes] failed to auto-resume session', resumeError instanceof Error ? resumeError.message : resumeError)
+    }
+  }
 }
 
 function createTray() {
@@ -357,26 +498,9 @@ app.whenReady().then(async () => {
 
   // Start the bridge in background. Once the ACP handshake completes,
   // resume the last session if one was persisted.
-  void hermesBridge.start().then(async () => {
-    sessionManager.updateSession('default', { cwd: workspaceRoot, title: currentSessionTitle })
-
-    if (lastSessionId && hermesBridge.getSessionId() !== lastSessionId) {
-      try {
-        await hermesBridge.loadSession(lastSessionId, workspaceRoot)
-        currentSessionTitle = await lookupSessionTitle(lastSessionId)
-        sessionManager.updateSession('default', { cwd: workspaceRoot, title: currentSessionTitle })
-        queuePersistWorkspaceRoot(lastSessionId)
-        const snapshot = await createWorkspaceSnapshot()
-        mainWindow?.webContents.send('hermes:event', {
-          type: 'workspace:snapshot',
-          payload: snapshot,
-        } satisfies HermesBridgeEvent)
-      } catch (error) {
-        console.warn('[hermes] failed to auto-resume session', error instanceof Error ? error.message : error)
-      }
-    }
-  }).catch((error) => {
+  void warmUpHermesBridge().catch((error) => {
     console.warn('[hermes] backend warm-up failed', error instanceof Error ? error.message : error)
+    void offerEnvironmentSetup(error)
   })
 
   app.on('activate', () => {

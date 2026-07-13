@@ -8,7 +8,7 @@ export LC_ALL="${LC_ALL:-C.UTF-8}"
 export HERMES_TEXT_ENCODING=utf-8
 
 repo_root="$(cd -- "$(dirname -- "$0")" && pwd)"
-runtime_dir="$repo_root/.hermes-runtime"
+runtime_dir="${HERMES_RUNTIME_DIR:-$repo_root/.hermes-runtime}"
 export HERMES_HOME="${HERMES_HOME:-$runtime_dir/hermes-home}"
 venv_dir="$runtime_dir/hermes-venv"
 hermes_bin="$venv_dir/bin/hermes"

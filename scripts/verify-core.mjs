@@ -98,6 +98,41 @@ assert.equal(inferLanguageFromPath('unknown'), 'text')
 
 const execFileAsync = promisify(execFile)
 
+const windowsSetupScript = await readFile(path.join(process.cwd(), 'scripts', 'setup-windows-env.ps1'), 'utf8')
+assert.match(windowsSetupScript, /npm_config_registry\)\) \{\s*\$env:npm_config_registry = "https:\/\/registry\.npmmirror\.com"/)
+assert.match(windowsSetupScript, /PLAYWRIGHT_DOWNLOAD_HOST\)\) \{\s*\$env:PLAYWRIGHT_DOWNLOAD_HOST = "https:\/\/npmmirror\.com\/mirrors\/playwright"/)
+assert.match(windowsSetupScript, /-File \$InstallerPath -Stage \$Name -NonInteractive/)
+assert.match(windowsSetupScript, /if \(\$InstallBrowserTools\) \{\s*\$stages \+= "node-deps"/)
+
+const windowsStartScript = await readFile(path.join(process.cwd(), 'scripts', 'start-windows.ps1'), 'utf8')
+assert.match(windowsStartScript, /\$env:npm_config_registry = "https:\/\/registry\.npmmirror\.com"/)
+assert.match(windowsStartScript, /\$env:ELECTRON_MIRROR = "https:\/\/npmmirror\.com\/mirrors\/electron\/"/)
+assert.match(windowsStartScript, /Invoke-NativeHermesSetup/)
+
+const macStartScript = await readFile(path.join(process.cwd(), 'start-hermes-desktop.command'), 'utf8')
+assert.match(macStartScript, /command -v hermes/)
+assert.match(macStartScript, /\/bin\/zsh \.\/setup-hermes-environment\.command/)
+const macSetupScript = await readFile(path.join(process.cwd(), 'setup-hermes-environment.command'), 'utf8')
+assert.match(macSetupScript, /HERMES_RUNTIME_DIR:-\$repo_root\/\.hermes-runtime/)
+
+const packageConfig = JSON.parse(await readFile(path.join(process.cwd(), 'package.json'), 'utf8'))
+assert.equal(packageConfig.build.extraResources.some((resource) => (
+  resource.from === 'node_modules/ssh2'
+  && resource.to === 'mods/hermes-ssh/node_modules/ssh2'
+)), true)
+assert.equal(packageConfig.build.win.extraFiles.some((file) => (
+  file.from === 'setup-hermes-environment.cmd'
+  && file.to === 'setup-hermes-environment.cmd'
+)), true)
+assert.equal(packageConfig.build.win.extraFiles.some((file) => (
+  file.from === 'scripts/setup-windows-env.ps1'
+  && file.to === 'scripts/setup-windows-env.ps1'
+)), true)
+assert.equal(packageConfig.build.mac.extraResources.some((resource) => (
+  resource.from === 'setup-hermes-environment.command'
+  && resource.to === 'setup/setup-hermes-environment.command'
+)), true)
+
 const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'hermes-skills-'))
 try {
   await mkdir(path.join(skillsRoot, 'flat-skill'), { recursive: true })
