@@ -6,6 +6,31 @@
 
 当前代码库规模：约 30 个源文件，是一个良好的重构窗口。
 
+## 后续优化：macOS M 系列兼容性
+
+### 当前状态与风险
+
+- `v0.1.3` 已分别提供 Intel `x64` DMG 和 Apple Silicon `arm64` DMG，当前 M 系列 Mac 可以使用 `arm64` 版本。
+- 目前只有本机构建与基础镜像校验，尚未建立覆盖不同 M 系列芯片和 macOS 版本的持续验证矩阵。
+- Electron 主程序虽然可以构建为 `arm64`，Hermes 使用的 Python/uv 运行时、可选原生 npm 依赖、MOD 依赖和后续新增组件仍可能意外引入仅支持 `x64` 的二进制。
+- 新一代 M 系列芯片或 macOS 更新后，未公证应用、运行时下载地址和系统安全策略也可能产生新的兼容性问题。
+
+### 优化计划
+
+1. 在发布流程中固定生成并保留 `x64`、`arm64` 两套 DMG，禁止用 Intel 包替代或覆盖 Apple Silicon 包。
+2. 增加自动化架构检查，验证 Electron 主程序、应用内原生模块以及下载后的 Hermes/Python 运行时均与目标架构一致。
+3. 建立 macOS 测试矩阵，至少覆盖 Intel、早期 M 系列和发布时可获得的新一代 M 系列设备，并记录 macOS 版本。
+4. 为 DMG 增加首次启动冒烟测试：安装、Hermes/ACP 一键配置、新建会话、MOD 加载和正常退出。
+5. 评估 Universal 2 `.app`/DMG；只有在 Electron、Hermes Python 运行时和全部原生依赖可稳定合并时才改为单包发布，否则继续提供双架构包。
+6. 配置 Apple Developer ID 签名与 notarization，降低未来 macOS Gatekeeper 策略变化造成的启动失败风险。
+
+### 发布验收标准
+
+- Release 必须同时存在名称明确的 `arm64` 与 `x64` DMG。
+- `file`/`lipo` 检查结果必须与产物架构标识一致。
+- Apple Silicon 冒烟测试必须在未安装 Hermes 的干净用户环境中通过。
+- 任一目标架构验证失败时，不得将该版本标记为正式 Latest Release。
+
 ## 架构概览 — 三层模型
 
 ```

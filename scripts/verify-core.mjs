@@ -17,6 +17,7 @@ import { isPathInside } from '../dist-electron/electron/workspace-security.js'
 import { readWorkspaceDirectory } from '../dist-electron/electron/workspace-tree.js'
 import { createHermesWorktree, listHermesWorktrees } from '../dist-electron/electron/worktree.js'
 import { PreviewManager, detectPreviewConfigurations, isAllowedPreviewUrl } from '../dist-electron/electron/preview-manager.js'
+import { createNativeHermesEnvironment } from '../dist-electron/electron/backend.js'
 import {
   createUtf8ProcessEnv,
   decodeCommandOutput,
@@ -97,6 +98,26 @@ assert.equal(inferLanguageFromPath('README.md'), 'markdown')
 assert.equal(inferLanguageFromPath('unknown'), 'text')
 
 const execFileAsync = promisify(execFile)
+
+const nativeHermesHome = await mkdtemp(path.join(os.tmpdir(), 'hermes-native-home-'))
+try {
+  await writeFile(path.join(nativeHermesHome, 'config.yaml'), [
+    'model:',
+    '  provider: "deepseek"',
+    '  default: "deepseek-v4-pro"',
+    'custom_providers:',
+    '  - name: "deepseek"',
+    '    base_url: "https://api.example.test"',
+    '    api_key: "test-key"',
+    '    api_mode: "chat_completions"',
+  ].join('\n'))
+  const nativeEnv = createNativeHermesEnvironment(nativeHermesHome, {})
+  assert.equal(nativeEnv.HERMES_HOME, nativeHermesHome)
+  assert.equal(nativeEnv.DEEPSEEK_API_KEY, 'test-key')
+  assert.equal(nativeEnv.DEEPSEEK_BASE_URL, 'https://api.example.test')
+} finally {
+  await rm(nativeHermesHome, { recursive: true, force: true })
+}
 
 const windowsSetupScript = await readFile(path.join(process.cwd(), 'scripts', 'setup-windows-env.ps1'), 'utf8')
 assert.match(windowsSetupScript, /npm_config_registry\)\) \{\s*\$env:npm_config_registry = "https:\/\/registry\.npmmirror\.com"/)

@@ -220,8 +220,7 @@ class NativeBackendProvider implements BackendProvider {
     workspacePath: string,
     proxyConfig: ProxyConfig | null,
   ): Promise<ChildProcessWithoutNullStreams> {
-    const env: NodeJS.ProcessEnv = createUtf8ProcessEnv({ ...process.env })
-    applyHermesConfigEnvironment(env, this.hermesHome)
+    const env = createNativeHermesEnvironment(this.hermesHome)
     const desktopPythonPath = process.env.HERMES_DESKTOP_PYTHONPATH
     if (desktopPythonPath && existsSync(desktopPythonPath)) {
       env.PYTHONPATH = [desktopPythonPath, env.PYTHONPATH].filter(Boolean).join(path.delimiter)
@@ -288,7 +287,11 @@ class NativeBackendProvider implements BackendProvider {
   }
 
   async execCommand(args: string[]): Promise<string> {
-    return execFileAsync(getNativeHermesExecutable(), args)
+    return spawnCommand(
+      getNativeHermesExecutable(),
+      args,
+      createNativeHermesEnvironment(this.hermesHome),
+    )
   }
 
   async gitAvailable(): Promise<boolean> {
@@ -422,6 +425,15 @@ function applyHermesConfigEnvironment(env: NodeJS.ProcessEnv, hermesHome: string
   if (baseUrl && !env.OPENAI_BASE_URL) env.OPENAI_BASE_URL = baseUrl
 }
 
+export function createNativeHermesEnvironment(
+  hermesHome: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env = createUtf8ProcessEnv({ ...baseEnv, HERMES_HOME: hermesHome })
+  applyHermesConfigEnvironment(env, hermesHome)
+  return env
+}
+
 function readModelScalar(content: string, key: string): string {
   const block = content.match(/(^|\n)model:\n([\s\S]*?)(\n\S|$)/)?.[2] ?? ''
   return parseYamlScalar(block.match(new RegExp(`^\\s{2}${key}:\\s*(.+)$`, 'm'))?.[1])
@@ -485,11 +497,15 @@ function parseYamlScalar(raw: string | null | undefined): string {
  * because execFile() cannot execute .cmd/.bat wrappers on Windows — pip's
  * `hermes` entry point is often a .cmd file that only spawn() can launch.
  */
-function spawnCommand(command: string, args: string[]): Promise<string> {
+function spawnCommand(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = createUtf8ProcessEnv(),
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: 'pipe',
-      env: createUtf8ProcessEnv(),
+      env,
       windowsHide: true,
     })
 
